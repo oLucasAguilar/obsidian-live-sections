@@ -1,0 +1,147 @@
+.live-sections-breadcrumb {
+  cursor: pointer;
+  color: var(--link-color);
+  text-decoration: var(--link-decoration);
+  white-space: nowrap;
+}
+
+.live-sections-breadcrumb:hover {
+  color: var(--link-color-hover);
+  text-decoration: var(--link-decoration-hover);
+}
+
+.live-sections-breadcrumb .live-sections-sep {
+  margin: 0 0.3em;
+  opacity: 0.45;
+  font-weight: 400;
+}
+
+.live-sections-breadcrumb .live-sections-file {
+  color: inherit;
+}
+
+.live-sections-breadcrumb .live-sections-head {
+  font-weight: inherit;
+}
+
+.live-sections-embed {
+  --live-sections-gutter: 0.7em;
+  --live-sections-nudge: calc(var(--list-indent, 2em) / 2);
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+  background: none;
+}
+
+/* inline-block, never block: a block child splits the line and leaves an empty
+   line box under the box */
+.live-sections-embed.is-inline {
+  display: inline-block;
+  vertical-align: top;
+  max-width: 100%;
+}
+
+/* full width is what pushes it below the raw text, without splitting the line */
+.live-sections-embed.is-preview {
+  display: inline-block;
+  vertical-align: top;
+  width: 100%;
+}
+
+/* has to outweigh .markdown-source-view.mod-cm6 img.cm-widgetBuffer, which is
+   !important at (0,3,1) */
+.markdown-source-view.mod-cm6 .live-sections-embed ~ img.cm-widgetBuffer {
+  display: none !important;
+}
+
+.live-sections-embed.is-block {
+  display: block;
+}
+
+.live-sections-embed-body {
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: var(--live-sections-gutter);
+  margin-left: calc(-1 * var(--live-sections-gutter) - 2px);
+}
+
+/* draws the rule on Obsidian's indentation guide line */
+.live-sections-embed.is-inline .live-sections-embed-body {
+  --live-sections-guide-inset: calc(
+    var(--list-indent, 2em) - var(--indentation-guide-editing-indent, 0.85em)
+  );
+  border-left: var(--indentation-guide-width, 1px) solid var(--indentation-guide-color);
+  padding-left: var(--live-sections-guide-inset);
+  margin-left: calc(
+    var(--live-sections-nudge) - var(--live-sections-guide-inset) -
+      var(--indentation-guide-width, 1px)
+  );
+}
+
+.live-sections-embed.is-block:hover .live-sections-embed-body {
+  border-left-color: var(--background-modifier-border-hover);
+}
+
+.live-sections-embed.is-inline:hover .live-sections-embed-body {
+  border-left-color: var(--indentation-guide-color-active, var(--indentation-guide-color));
+}
+
+.live-sections-embed-header {
+  display: inline;
+}
+
+.live-sections-embed-header .live-sections-warn {
+  margin-left: 0.6em;
+}
+
+.live-sections-embed.is-collapsed .live-sections-embed-body {
+  display: none;
+}
+
+.live-sections-embed.is-preview.is-collapsed {
+  width: 0;
+  height: 0;
+  overflow: visible;
+}
+
+.live-sections-at {
+  margin-right: 0.3em;
+  opacity: 0.7;
+  cursor: text;
+}
+
+.live-sections-at:hover {
+  opacity: 1;
+}
+
+.live-sections-warn {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning);
+  opacity: 0.9;
+}
+
+.live-sections-embed-body .cm-editor {
+  background: transparent;
+}
+
+.live-sections-embed-body .cm-scroller,
+.live-sections-embed-body .cm-content {
+  padding: 0;
+}
+
+.live-sections-embed-body .cm-sizer {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+  min-height: 0;
+}
+
+.live-sections-embed-body .cm-editor.cm-focused {
+  outline: none;
+  box-shadow: none;
+}
+
+.live-sections-error {
+  padding: 0.5em 0.7em;
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+}

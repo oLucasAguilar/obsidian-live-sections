@@ -1,0 +1,10 @@
+{
+  "id": "live-sections",
+  "name": "Live Sections",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Embed a section of another note as an editable box that stays in sync with its source, while editing.",
+  "author": "Lucas Aguilar",
+  "authorUrl": "https://github.com/oLucasAguilar",
+  "isDesktopOnly": false
+}
