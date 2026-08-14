@@ -945,12 +945,14 @@ function buildBlockDecorations(state, plugin) {
     const line = doc.line(n);
     const placement = triggerPlacement(line.text, plugin.embedLine);
     if (!placement) continue;
+    const collapsible = !hasIndentedChild(lineTexts, n);
 
     if (triggerRevealed(plugin, state, line)) {
       ranges.push(
         Decoration.widget({
           widget: new SectionWidget(
-            plugin, placement.linktext, sourcePath, placement.block === false, true, occurrences.get(n)
+            plugin, placement.linktext, sourcePath, placement.block === false, true,
+            occurrences.get(n), collapsible
           ),
           side: 1,
         }).range(line.to)
@@ -958,7 +960,9 @@ function buildBlockDecorations(state, plugin) {
     } else if (placement.block) {
       ranges.push(
         Decoration.replace({
-          widget: new SectionWidget(plugin, placement.linktext, sourcePath, false, false, occurrences.get(n)),
+          widget: new SectionWidget(
+            plugin, placement.linktext, sourcePath, false, false, occurrences.get(n), collapsible
+          ),
           block: true,
         }).range(line.from, line.to)
       );

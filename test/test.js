@@ -152,6 +152,15 @@ check('tabs are measured the same as spaces', t.hasIndentedChild(tabbed, 1), tru
 const outdented = ['\t- @[[A#B]]', '- back out'];
 check('a line further out is not a child', t.hasIndentedChild(outdented, 1), false);
 
+/* Every path that builds a box has to agree on whether it can collapse, or the
+ * same box renders one way rendered and another way in preview. */
+const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8');
+const builders = (source.match(/new SectionWidget\(/g) || []).length;
+const withFlag = (source.match(/new SectionWidget\([\s\S]{0,220}?collapsible/g) || []).length;
+check('every box is told whether it can collapse', withFlag, builders);
+check('both builders work it out the same way',
+  (source.match(/hasIndentedChild\(lineTexts, /g) || []).length, 2);
+
 /* ---- two of the same link are two separate boxes ---- */
 const repeated = ['- @[[A#B]]', 'text', '- @[[A#B]]', '- @[[C#D]]', '- @[[A#B]]'];
 const occurrences = t.buildOccurrenceMap(repeated, AT);
