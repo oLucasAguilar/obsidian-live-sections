@@ -4,7 +4,7 @@ Write `@[[Note#Heading]]` on a line and that section shows up there, editable, k
 
 Obsidian's own `![[Note#Heading]]` renders the section read only, in embed styling. This keeps the text as text: you type in it, and the source file changes.
 
-<!-- ![](docs/editing.gif) -->
+![](docs/editing.gif)
 
 ## Nested anchors
 
