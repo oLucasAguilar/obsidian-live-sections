@@ -138,6 +138,20 @@ check('ctrl+arrow stays out of it when the neighbour is ordinary', t.skipTargetL
 check('with nothing beyond the run it settles on the edge',
   t.skipTargetLine(['@[[A#B]]', 'after'], 2, -1, AT), 1);
 
+/* ---- a trigger line with children belongs to the native fold ---- */
+const withChild = ['- @[[A#B]]', '\t- written by hand', '- next'];
+check('an indented line under it counts as a child', t.hasIndentedChild(withChild, 1), true);
+check('a sibling below is not a child', t.hasIndentedChild(withChild, 3), false);
+const spaced = ['- @[[A#B]]', '', '    - after a blank line', 'end'];
+check('a blank line does not end the item', t.hasIndentedChild(spaced, 1), true);
+const alone = ['- @[[A#B]]', '- sibling'];
+check('a plain sibling is not a child', t.hasIndentedChild(alone, 1), false);
+check('nothing below means no child', t.hasIndentedChild(alone, 2), false);
+const tabbed = ['\t- @[[A#B]]', '\t\t- deeper'];
+check('tabs are measured the same as spaces', t.hasIndentedChild(tabbed, 1), true);
+const outdented = ['\t- @[[A#B]]', '- back out'];
+check('a line further out is not a child', t.hasIndentedChild(outdented, 1), false);
+
 /* ---- two of the same link are two separate boxes ---- */
 const repeated = ['- @[[A#B]]', 'text', '- @[[A#B]]', '- @[[C#D]]', '- @[[A#B]]'];
 const occurrences = t.buildOccurrenceMap(repeated, AT);

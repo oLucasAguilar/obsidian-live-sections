@@ -33,12 +33,11 @@
   background: none;
 }
 
-/* inline-block, never block: a block child splits the line and leaves an empty
-   line box under the box */
+/* inline, so the title flows after the list marker and the body below it gets
+   the full width of the line. inline-block would size the box to its content,
+   and a CodeMirror editor inside a shrink to fit box collapses and wraps early. */
 .live-sections-embed.is-inline {
-  display: inline-block;
-  vertical-align: top;
-  max-width: 100%;
+  display: inline;
 }
 
 /* full width is what pushes it below the raw text, without splitting the line */

@@ -138,6 +138,20 @@ function triggerPlacement(lineText, embedRegex) {
   return { prefix, linktext: match[2], block: prefix.length === 0 };
 }
 
+function indentWidth(text) {
+  const lead = (text.match(/^[ \t]*/) || [''])[0];
+  return lead.replace(/\t/g, '    ').length;
+}
+
+function hasIndentedChild(lineTexts, lineNumber) {
+  const own = indentWidth(lineTexts[lineNumber - 1] || '');
+  for (let i = lineNumber; i < lineTexts.length; i++) {
+    if (!lineTexts[i].trim()) continue;
+    return indentWidth(lineTexts[i]) > own;
+  }
+  return false;
+}
+
 function collapseKeyFor(sourcePath, linktext, occurrence) {
   return `${sourcePath}::${linktext}::${occurrence || 0}`;
 }
@@ -382,7 +396,7 @@ class SectionEditorHost {
 }
 
 class SectionMount {
-  constructor(plugin, linktext, sourcePath, view, isInline, preview, occurrence) {
+  constructor(plugin, linktext, sourcePath, view, isInline, preview, occurrence, collapsible) {
     this.plugin = plugin;
     this.app = plugin.app;
     this.linktext = linktext;
@@ -394,6 +408,7 @@ class SectionMount {
     this.el = document.createElement('div');
     this.preview = !!preview;
     this.occurrence = occurrence || 0;
+    this.collapsible = collapsible !== false;
     this.el.className =
       'live-sections-embed ' + (isInline ? 'is-inline' : 'is-block') + (preview ? ' is-preview' : '');
     this.el.__liveSectionsMount = this;
@@ -445,7 +460,7 @@ class SectionMount {
   }
 
   get collapsed() {
-    return this.plugin.collapsed.has(this.collapseKey);
+    return this.collapsible && this.plugin.collapsed.has(this.collapseKey);
   }
 
   applyCollapsed() {
@@ -722,7 +737,7 @@ class SectionMount {
 }
 
 class SectionWidget extends WidgetType {
-  constructor(plugin, linktext, sourcePath, isInline, preview, occurrence) {
+  constructor(plugin, linktext, sourcePath, isInline, preview, occurrence, collapsible) {
     super();
     this.plugin = plugin;
     this.linktext = linktext;
@@ -730,6 +745,7 @@ class SectionWidget extends WidgetType {
     this.isInline = !!isInline;
     this.preview = !!preview;
     this.occurrence = occurrence || 0;
+    this.collapsible = collapsible !== false;
   }
 
   eq(other) {
@@ -738,13 +754,15 @@ class SectionWidget extends WidgetType {
       other.sourcePath === this.sourcePath &&
       other.isInline === this.isInline &&
       other.preview === this.preview &&
-      other.occurrence === this.occurrence
+      other.occurrence === this.occurrence &&
+      other.collapsible === this.collapsible
     );
   }
 
   toDOM(view) {
     const mount = new SectionMount(
-      this.plugin, this.linktext, this.sourcePath, view, this.isInline, this.preview, this.occurrence
+      this.plugin, this.linktext, this.sourcePath, view, this.isInline, this.preview,
+      this.occurrence, this.collapsible
     );
     this.plugin.mounts.add(mount);
     return mount.el;
@@ -973,7 +991,8 @@ function buildInlineDecorations(view, plugin) {
 
   if (!plugin.settings.sectionEmbeds) return Decoration.none;
 
-  const occurrences = buildOccurrenceMap(doc.toString().split('\n'), plugin.embedLine);
+  const lineTexts = doc.toString().split('\n');
+  const occurrences = buildOccurrenceMap(lineTexts, plugin.embedLine);
 
   for (const { from, to } of view.visibleRanges) {
     let pos = from;
@@ -983,18 +1002,26 @@ function buildInlineDecorations(view, plugin) {
 
       if (placement) {
         const key = collapseKeyFor(sourcePath, placement.linktext, occurrences.get(line.number));
-        ranges.push(
-          Decoration.widget({
-            widget: new FoldWidget(plugin, key, plugin.collapsed.has(key)),
-            side: -1,
-          }).range(line.from)
-        );
+        // A line with an indented line under it is a list item with children,
+        // and Obsidian draws its own fold arrow there. Two arrows on one line
+        // is one too many, so the native one owns that line.
+        const collapsible = !hasIndentedChild(lineTexts, line.number);
+
+        if (collapsible) {
+          ranges.push(
+            Decoration.widget({
+              widget: new FoldWidget(plugin, key, plugin.collapsed.has(key)),
+              side: -1,
+            }).range(line.from)
+          );
+        }
 
         if (!placement.block && !triggerRevealed(plugin, state, line)) {
           ranges.push(
             Decoration.replace({
               widget: new SectionWidget(
-                plugin, placement.linktext, sourcePath, true, false, occurrences.get(line.number)
+                plugin, placement.linktext, sourcePath, true, false,
+                occurrences.get(line.number), collapsible
               ),
             }).range(line.from + placement.prefix.length, line.to)
           );
@@ -1203,7 +1230,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     const view = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
     if (view && view.editor) {
       const mount = this.mountForContext(view.editor, view);
-      return { mount, editor: view.editor, ctx: view };
+      return { mount: mount && mount.collapsible ? mount : null, editor: view.editor, ctx: view };
     }
     return { mount: null, editor: null, ctx };
   }
@@ -1315,6 +1342,7 @@ module.exports.__test = {
   replaceSection,
   breadcrumbParts,
   buildOccurrenceMap,
+  hasIndentedChild,
   splitTrailingBlank,
   embedLineRegex,
   triggerPlacement,
