@@ -14,7 +14,7 @@ Obsidian's own `![[Note#Heading]]` renders the section read only, in embed styli
 
 Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.
 
-<!-- ![](docs/collapsing.gif) -->
+![](docs/collapsing.gif)
 
 ## Keyboard
 
