@@ -159,7 +159,7 @@ const builders = (source.match(/new SectionWidget\(/g) || []).length;
 const withFlag = (source.match(/new SectionWidget\([\s\S]{0,220}?collapsible/g) || []).length;
 check('every box is told whether it can collapse', withFlag, builders);
 check('both builders work it out the same way',
-  (source.match(/hasIndentedChild\(lineTexts, /g) || []).length, 2);
+  (source.match(/(?<!function )hasIndentedChild\(lineTexts, /g) || []).length, 2);
 
 /* ---- two of the same link are two separate boxes ---- */
 const repeated = ['- @[[A#B]]', 'text', '- @[[A#B]]', '- @[[C#D]]', '- @[[A#B]]'];
