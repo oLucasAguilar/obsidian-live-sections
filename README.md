@@ -10,6 +10,12 @@ Obsidian's own `![[Note#Heading]]` renders the section read only, in embed styli
 
 `@[[Recipes#Bread#Sourdough]]` walks the heading tree. A `Sourdough` under `Bread` is not the same heading as a top level `Sourdough`, and the other plugins that do this cut the link at the first `#` and cannot tell them apart.
 
+## Text on the line
+
+`before @[[Recipes#Bread]] after` renders, and so do two triggers on one line. The words stay on their line with the section title in place of the link, and the section opens under the whole line. A section is taller than a line, so it cannot sit in the middle of a sentence.
+
+A line the trigger has to itself keeps its old shape, block at the start of a line and inline after a list marker, with the fold arrow. A shared line has no arrow, since that arrow belongs to the line, not to the box.
+
 ## Collapsing
 
 Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.
@@ -43,7 +49,6 @@ The trigger character, whether arrow keys leave a section at its edges, how many
 
 ## Known gaps
 
-- Text after the trigger on the same line stops it rendering. `@[[Note#Heading]] and a comment` stays raw.
 - Long or deeply nested content inside a bullet renders with too much space at the start of each line.
 
 ## Tests

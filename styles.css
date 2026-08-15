@@ -40,6 +40,14 @@
   display: inline;
 }
 
+/* a shared line keeps its title in the text and its body under the line, so the
+   box itself is the body: full width, same as the preview one */
+.live-sections-embed.is-shared {
+  display: inline-block;
+  vertical-align: top;
+  width: 100%;
+}
+
 /* full width is what pushes it below the raw text, without splitting the line */
 .live-sections-embed.is-preview {
   display: inline-block;
@@ -76,7 +84,8 @@
   );
 }
 
-.live-sections-embed.is-block:hover .live-sections-embed-body {
+.live-sections-embed.is-block:hover .live-sections-embed-body,
+.live-sections-embed.is-shared:hover .live-sections-embed-body {
   border-left-color: var(--background-modifier-border-hover);
 }
 

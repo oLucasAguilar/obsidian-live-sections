@@ -55,9 +55,21 @@ check('inside a bullet', AT.test('  - @[[Note#One]]'), true);
 check('captures the link', '@[[Note#One]]'.match(AT)[2], 'Note#One');
 check('a plain link is not a trigger', AT.test('[[Note#One]]'), false);
 check('an obsidian embed is not a trigger', AT.test('![[Note#One]]'), false);
-check('trailing text is not a trigger yet', AT.test('@[[Note#One]] and more'), false);
-check('mid line use is not a trigger', AT.test('write to me @[[Note#One]]'), false);
+check('a line to itself is what this regex answers', AT.test('@[[Note#One]] and more'), false);
 check('regex characters in the trigger are escaped', t.embedLineRegex('++').test('++[[A#B]]'), true);
+
+/* ---- triggers with text around them ---- */
+const ANY = t.embedAnyRegex('@');
+const hits = (text) => t.triggersInLine(text, ANY);
+check('text before and after still renders', hits('note this @[[Note#One]] please').map((h) => h.linktext),
+  ['Note#One']);
+check('the box replaces the link only', hits('ab @[[A#B]] cd')[0], { linktext: 'A#B', from: 3, to: 11 });
+check('two on a line are two boxes', hits('@[[A#B]] and @[[C#D]]').map((h) => h.from), [0, 13]);
+check('a plain link is left alone', hits('[[A#B]]'), []);
+check('an obsidian embed is left alone', hits('![[A#B]]'), []);
+check('reading a line does not move the shared regex on', hits('@[[A#B]]').length, hits('@[[A#B]]').length);
+check('a trigger of several characters works too',
+  t.triggersInLine('x ++[[A#B]]', t.embedAnyRegex('++')).map((h) => h.from), [2]);
 
 /* ---- block or inline, the rule Obsidian uses for its own embeds ---- */
 check('alone at the start of the line is a block',
@@ -159,19 +171,30 @@ const builders = (source.match(/new SectionWidget\(/g) || []).length;
 const withFlag = (source.match(/new SectionWidget\([\s\S]{0,220}?collapsible/g) || []).length;
 check('every box is told whether it can collapse', withFlag, builders);
 check('both builders work it out the same way',
-  (source.match(/(?<!function )hasIndentedChild\(lineTexts, /g) || []).length, 2);
+  (source.match(/(?<!function )canCollapse\(lineTexts, /g) || []).length, 2);
+
+/* ---- where the box goes, once text may share the line ---- */
+const bareLine = t.triggerPlacement('- @[[A#B]]', AT);
+check('a line to itself keeps its old layout', t.layoutFor(bareLine), 'inline');
+check('alone on the line is still a block', t.layoutFor(t.triggerPlacement('@[[A#B]]', AT)), 'block');
+check('a shared line is neither', t.layoutFor(null), 'shared');
+check('a shared line has no fold arrow', t.canCollapse(['text @[[A#B]]'], 1, null), false);
+check('a line to itself keeps its arrow', t.canCollapse(['- @[[A#B]]', '- next'], 1, bareLine), true);
+check('children still take the arrow away',
+  t.canCollapse(['- @[[A#B]]', '\t- child'], 1, bareLine), false);
 
 /* ---- two of the same link are two separate boxes ---- */
-const repeated = ['- @[[A#B]]', 'text', '- @[[A#B]]', '- @[[C#D]]', '- @[[A#B]]'];
-const occurrences = t.buildOccurrenceMap(repeated, AT);
-check('the first use is zero', occurrences.get(1), 0);
-check('the second is one', occurrences.get(3), 1);
-check('the third is two', occurrences.get(5), 2);
-check('another link counts on its own', occurrences.get(4), 0);
-check('lines without a trigger are absent', occurrences.has(2), false);
+const repeated = ['- @[[A#B]]', 'text', '- @[[A#B]]', '- @[[C#D]]', 'ab @[[A#B]] @[[A#B]]'];
+const occurrences = t.buildOccurrenceMap(repeated, ANY);
+const at = (line, from) => occurrences.get(t.occurrenceKeyFor(line, from));
+check('the first use is zero', at(1, 2), 0);
+check('the second is one', at(3, 2), 1);
+check('another link counts on its own', at(4, 2), 0);
+check('two on one line count separately', [at(5, 3), at(5, 12)], [2, 3]);
+check('lines without a trigger are absent', occurrences.has(t.occurrenceKeyFor(2, 0)), false);
 const moved = ['heading', ''].concat(repeated);
-check('writing above them does not renumber', t.buildOccurrenceMap(moved, AT).get(3), 0);
-check('nor the later ones', t.buildOccurrenceMap(moved, AT).get(7), 2);
+check('writing above them does not renumber', t.buildOccurrenceMap(moved, ANY).get(t.occurrenceKeyFor(3, 2)), 0);
+check('nor the later ones', t.buildOccurrenceMap(moved, ANY).get(t.occurrenceKeyFor(7, 12)), 3);
 
 /* ---- a section that leads back to itself ---- */
 check('the key names note and heading', t.sectionKey('Recipes.md', ['Bread', 'Sourdough']),

@@ -129,6 +129,21 @@ function embedLineRegex(trigger) {
   return new RegExp(`^(\\s*(?:[-*+]\\s+|\\d+\\.\\s+)?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]\\s*$`);
 }
 
+// The same trigger anywhere in a line, so text may sit before and after it.
+function embedAnyRegex(trigger) {
+  return new RegExp(`${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]`, 'g');
+}
+
+// lastIndex on a global regex is state, so nothing here runs test or exec on
+// the shared one. matchAll reads it and leaves it alone.
+function triggersInLine(lineText, anyRegex) {
+  const hits = [];
+  for (const match of String(lineText).matchAll(anyRegex)) {
+    hits.push({ linktext: match[1], from: match.index, to: match.index + match[0].length });
+  }
+  return hits;
+}
+
 // Block only when the trigger is alone at the start of its line, mirroring
 // Obsidian's own embeds. Inline keeps the line's indentation.
 function triggerPlacement(lineText, embedRegex) {
@@ -165,21 +180,36 @@ function embedGuard(ancestorKeys, key, depth, maxDepth) {
   return null;
 }
 
+// A line the trigger does not have to itself gets no fold arrow: the arrow sits
+// at the start of the line, where the text is, not the box.
+function canCollapse(lineTexts, lineNumber, placement) {
+  return !!placement && !hasIndentedChild(lineTexts, lineNumber);
+}
+
+function layoutFor(placement) {
+  if (!placement) return 'shared';
+  return placement.block ? 'block' : 'inline';
+}
+
 function collapseKeyFor(sourcePath, linktext, occurrence) {
   return `${sourcePath}::${linktext}::${occurrence || 0}`;
 }
 
-function buildOccurrenceMap(lineTexts, embedRegex) {
+function occurrenceKeyFor(lineNumber, from) {
+  return `${lineNumber}:${from}`;
+}
+
+function buildOccurrenceMap(lineTexts, anyRegex) {
   const counts = new Map();
-  const byLine = new Map();
+  const byHit = new Map();
   for (let i = 0; i < lineTexts.length; i++) {
-    const placement = triggerPlacement(lineTexts[i], embedRegex);
-    if (!placement) continue;
-    const seen = counts.get(placement.linktext) || 0;
-    byLine.set(i + 1, seen);
-    counts.set(placement.linktext, seen + 1);
+    for (const hit of triggersInLine(lineTexts[i], anyRegex)) {
+      const seen = counts.get(hit.linktext) || 0;
+      byHit.set(occurrenceKeyFor(i + 1, hit.from), seen);
+      counts.set(hit.linktext, seen + 1);
+    }
   }
-  return byLine;
+  return byHit;
 }
 
 function stepTargetLine(lineTexts, currentNumber, dir, embedRegex) {
@@ -252,6 +282,10 @@ function wireLink(app, el, linktext, sourcePath, options) {
       sourcePath,
     });
   });
+}
+
+function insideEmbed(target) {
+  return !!(target && target.closest && target.closest('.live-sections-embed'));
 }
 
 function renderBreadcrumb(container, parts) {
@@ -427,7 +461,7 @@ function viewBelongsTo(view, mount) {
 }
 
 class SectionMount {
-  constructor(plugin, linktext, sourcePath, view, isInline, preview, occurrence, collapsible, parent) {
+  constructor(plugin, linktext, sourcePath, view, layout, preview, occurrence, collapsible, parent) {
     this.plugin = plugin;
     this.app = plugin.app;
     this.linktext = linktext;
@@ -442,8 +476,7 @@ class SectionMount {
     this.collapsible = collapsible !== false;
     this.parent = parent || null;
     this.depth = this.parent ? this.parent.depth + 1 : 0;
-    this.el.className =
-      'live-sections-embed ' + (isInline ? 'is-inline' : 'is-block') + (preview ? ' is-preview' : '');
+    this.el.className = 'live-sections-embed is-' + layout + (preview ? ' is-preview' : '');
     this.el.__liveSectionsMount = this;
 
     this.el.addEventListener('mousedown', (event) => event.stopPropagation());
@@ -799,12 +832,12 @@ class SectionMount {
 }
 
 class SectionWidget extends WidgetType {
-  constructor(plugin, linktext, sourcePath, isInline, preview, occurrence, collapsible) {
+  constructor(plugin, linktext, sourcePath, layout, preview, occurrence, collapsible) {
     super();
     this.plugin = plugin;
     this.linktext = linktext;
     this.sourcePath = sourcePath;
-    this.isInline = !!isInline;
+    this.layout = layout;
     this.preview = !!preview;
     this.occurrence = occurrence || 0;
     this.collapsible = collapsible !== false;
@@ -814,7 +847,7 @@ class SectionWidget extends WidgetType {
     return (
       other.linktext === this.linktext &&
       other.sourcePath === this.sourcePath &&
-      other.isInline === this.isInline &&
+      other.layout === this.layout &&
       other.preview === this.preview &&
       other.occurrence === this.occurrence &&
       other.collapsible === this.collapsible
@@ -823,7 +856,7 @@ class SectionWidget extends WidgetType {
 
   toDOM(view) {
     const mount = new SectionMount(
-      this.plugin, this.linktext, this.sourcePath, view, this.isInline, this.preview,
+      this.plugin, this.linktext, this.sourcePath, view, this.layout, this.preview,
       this.occurrence, this.collapsible, this.plugin.parentMountFor(view)
     );
     this.plugin.mounts.add(mount);
@@ -836,6 +869,57 @@ class SectionWidget extends WidgetType {
       this.plugin.mounts.delete(mount);
       mount.destroy();
     }
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// On a line the trigger shares with text, the box cannot sit in the sentence:
+// it is taller than a line. The title stays in the text, in place of the link,
+// and the body goes under the whole line as its own widget.
+class CrumbWidget extends WidgetType {
+  constructor(plugin, linktext, sourcePath) {
+    super();
+    this.plugin = plugin;
+    this.linktext = linktext;
+    this.sourcePath = sourcePath;
+  }
+
+  eq(other) {
+    return other.linktext === this.linktext && other.sourcePath === this.sourcePath;
+  }
+
+  toDOM(view) {
+    const parsed = splitLinkText(this.linktext);
+    const el = document.createElement('span');
+    el.className = 'live-sections-crumb';
+    const crumb = el.createSpan({ cls: 'live-sections-breadcrumb is-embed-title' });
+    crumb.setAttribute('data-href', this.linktext);
+
+    const reveal = () => {
+      try {
+        view.dispatch({ selection: { anchor: view.posAtDOM(el) }, scrollIntoView: true });
+        view.focus();
+      } catch (err) {
+        console.error('[live-sections] could not reveal the trigger', err);
+      }
+    };
+
+    const marker = crumb.createSpan({ cls: 'live-sections-at' });
+    marker.setText('@');
+    marker.setAttribute('title', 'Click to edit this link');
+    marker.addEventListener('mousedown', (event) => event.preventDefault());
+    marker.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      reveal();
+    });
+    renderBreadcrumb(crumb, breadcrumbParts(parsed.path, parsed.segments));
+    crumb.setAttribute('title', 'Click to open, ctrl or middle click to open in a tab. Click the @ to edit the link.');
+    wireLink(this.plugin.app, crumb, this.linktext, this.sourcePath);
+    return el;
   }
 
   ignoreEvent() {
@@ -1001,29 +1085,36 @@ function buildBlockDecorations(state, plugin) {
 
   const lineTexts = [];
   for (let n = 1; n <= doc.lines; n++) lineTexts.push(doc.line(n).text);
-  const occurrences = buildOccurrenceMap(lineTexts, plugin.embedLine);
+  const occurrences = buildOccurrenceMap(lineTexts, plugin.embedAny);
 
   for (let n = 1; n <= doc.lines; n++) {
     const line = doc.line(n);
+    const hits = triggersInLine(line.text, plugin.embedAny);
+    if (!hits.length) continue;
     const placement = triggerPlacement(line.text, plugin.embedLine);
-    if (!placement) continue;
-    const collapsible = !hasIndentedChild(lineTexts, n);
+    const collapsible = canCollapse(lineTexts, n, placement);
+    const layout = layoutFor(placement);
 
-    if (triggerRevealed(plugin, state, line)) {
-      ranges.push(
-        Decoration.widget({
-          widget: new SectionWidget(
-            plugin, placement.linktext, sourcePath, placement.block === false, true,
-            occurrences.get(n), collapsible
-          ),
-          side: 1,
-        }).range(line.to)
-      );
-    } else if (placement.block) {
+    // a shared line always keeps its body below it, so the body does not jump
+    // when the cursor arrives and the link goes raw
+    if (layout === 'shared' || triggerRevealed(plugin, state, line)) {
+      for (const hit of hits) {
+        ranges.push(
+          Decoration.widget({
+            widget: new SectionWidget(
+              plugin, hit.linktext, sourcePath, layout, true,
+              occurrences.get(occurrenceKeyFor(n, hit.from)), collapsible
+            ),
+            side: 1,
+          }).range(line.to)
+        );
+      }
+    } else if (layout === 'block') {
       ranges.push(
         Decoration.replace({
           widget: new SectionWidget(
-            plugin, placement.linktext, sourcePath, false, false, occurrences.get(n), collapsible
+            plugin, hits[0].linktext, sourcePath, 'block', false,
+            occurrences.get(occurrenceKeyFor(n, hits[0].from)), collapsible
           ),
           block: true,
         }).range(line.from, line.to)
@@ -1058,22 +1149,26 @@ function buildInlineDecorations(view, plugin) {
   if (!plugin.settings.sectionEmbeds) return Decoration.none;
 
   const lineTexts = doc.toString().split('\n');
-  const occurrences = buildOccurrenceMap(lineTexts, plugin.embedLine);
+  const occurrences = buildOccurrenceMap(lineTexts, plugin.embedAny);
 
   for (const { from, to } of view.visibleRanges) {
     let pos = from;
     while (pos <= to) {
       const line = doc.lineAt(pos);
-      const placement = triggerPlacement(line.text, plugin.embedLine);
+      const hits = triggersInLine(line.text, plugin.embedAny);
 
-      if (placement) {
-        const key = collapseKeyFor(sourcePath, placement.linktext, occurrences.get(line.number));
+      if (hits.length) {
+        const placement = triggerPlacement(line.text, plugin.embedLine);
         // A line with an indented line under it is a list item with children,
         // and Obsidian draws its own fold arrow there. Two arrows on one line
         // is one too many, so the native one owns that line.
-        const collapsible = !hasIndentedChild(lineTexts, line.number);
+        const collapsible = canCollapse(lineTexts, line.number, placement);
+        const layout = layoutFor(placement);
 
         if (collapsible) {
+          const key = collapseKeyFor(
+            sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(line.number, hits[0].from))
+          );
           ranges.push(
             Decoration.widget({
               widget: new FoldWidget(plugin, key, plugin.collapsed.has(key)),
@@ -1082,15 +1177,20 @@ function buildInlineDecorations(view, plugin) {
           );
         }
 
-        if (!placement.block && !triggerRevealed(plugin, state, line)) {
-          ranges.push(
-            Decoration.replace({
-              widget: new SectionWidget(
-                plugin, placement.linktext, sourcePath, true, false,
-                occurrences.get(line.number), collapsible
-              ),
-            }).range(line.from + placement.prefix.length, line.to)
-          );
+        if (layout !== 'block' && !triggerRevealed(plugin, state, line)) {
+          // one decoration per trigger, so the text between them stays put
+          for (const hit of hits) {
+            ranges.push(
+              Decoration.replace({
+                widget: layout === 'shared'
+                  ? new CrumbWidget(plugin, hit.linktext, sourcePath)
+                  : new SectionWidget(
+                    plugin, hit.linktext, sourcePath, layout, false,
+                    occurrences.get(occurrenceKeyFor(line.number, hit.from)), collapsible
+                  ),
+              }).range(line.from + hit.from, line.from + hit.to)
+            );
+          }
         }
       }
 
@@ -1142,7 +1242,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.saveCollapsed = obsidian.debounce(() => this.persist(), 500, true);
     this.mounts = new Set();
     this.buildStack = [];
-    this.embedLine = embedLineRegex(this.settings.embedTrigger);
+    this.setTrigger();
 
     this.registerEditorExtension([
       Prec.highest(makeViewPlugin(this)),
@@ -1150,6 +1250,24 @@ class LiveSectionsPlugin extends obsidian.Plugin {
       makeCursorKeymap(this),
     ]);
     this.addSettingTab(new LiveSectionsSettingTab(this.app, this));
+
+    // On Linux a middle click pastes the primary selection into whatever is
+    // editable under the pointer. Inside a box that is the wrong editor, or a
+    // spot the user never clicked, and the click already opens the link in a
+    // tab, so none of the default is wanted. Capture, or the editor gets the
+    // paste before this runs.
+    this.pasteGuardUntil = 0;
+    this.registerDomEvent(document, 'mousedown', (event) => {
+      if (event.button !== 1 || !insideEmbed(event.target)) return;
+      this.pasteGuardUntil = Date.now() + 300;
+      event.preventDefault();
+    }, true);
+    this.registerDomEvent(document, 'paste', (event) => {
+      if (Date.now() >= this.pasteGuardUntil) return;
+      this.pasteGuardUntil = 0;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
 
     this.app.workspace.onLayoutReady(() => {
       this.refreshEditors();
@@ -1164,8 +1282,8 @@ class LiveSectionsPlugin extends obsidian.Plugin {
         const cursor = editor.getCursor();
         const line = editor.getLine(cursor.line);
         const trigger = this.settings.embedTrigger;
-        if (this.embedLine.test(line)) {
-          editor.setLine(cursor.line, line.replace(trigger + '[[', '[['));
+        if (triggersInLine(line, this.embedAny).length) {
+          editor.setLine(cursor.line, line.split(trigger + '[[').join('[['));
         } else if (/\[\[[^\]\n]+\]\]/.test(line)) {
           editor.setLine(cursor.line, line.replace(/(!?)\[\[/, trigger + '[['));
         } else {
@@ -1262,8 +1380,13 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     await this.saveData(Object.assign({}, this.settings, { collapsed: Array.from(this.collapsed) }));
   }
 
-  async saveSettings() {
+  setTrigger() {
     this.embedLine = embedLineRegex(this.settings.embedTrigger);
+    this.embedAny = embedAnyRegex(this.settings.embedTrigger);
+  }
+
+  async saveSettings() {
+    this.setTrigger();
     await this.persist();
     this.refreshEditors();
   }
@@ -1430,6 +1553,11 @@ module.exports.__test = {
   breadcrumbParts,
   buildOccurrenceMap,
   hasIndentedChild,
+  canCollapse,
+  layoutFor,
+  embedAnyRegex,
+  triggersInLine,
+  occurrenceKeyFor,
   sectionKey,
   embedGuard,
   splitTrailingBlank,
