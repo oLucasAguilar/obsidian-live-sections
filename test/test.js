@@ -173,5 +173,34 @@ const moved = ['heading', ''].concat(repeated);
 check('writing above them does not renumber', t.buildOccurrenceMap(moved, AT).get(3), 0);
 check('nor the later ones', t.buildOccurrenceMap(moved, AT).get(7), 2);
 
+/* ---- a section that leads back to itself ---- */
+check('the key names note and heading', t.sectionKey('Recipes.md', ['Bread', 'Sourdough']),
+  'Recipes.md#bread#sourdough');
+check('the key reads headings the way links do', t.sectionKey('Recipes.md', ['  BREAD ']),
+  t.sectionKey('Recipes.md', ['Bread']));
+check('a whole note has a key too', t.sectionKey('Recipes.md', []), 'Recipes.md#');
+check('the same note under another name is another key',
+  t.sectionKey('Notes/Recipes.md', ['Bread']) === t.sectionKey('Recipes.md', ['Bread']), false);
+
+const bread = t.sectionKey('Recipes.md', ['Bread']);
+const sourdough = t.sectionKey('Recipes.md', ['Bread', 'Sourdough']);
+check('a section inside itself stops', t.embedGuard([bread], bread, 1, 3), 'cycle');
+check('so does a longer ring', t.embedGuard([bread, sourdough], bread, 2, 3), 'cycle');
+check('a cycle stops however much room is left', t.embedGuard([bread], bread, 1, 99), 'cycle');
+check('different sections nest freely', t.embedGuard([bread], sourdough, 1, 3), null);
+check('the first box is never blocked', t.embedGuard([], bread, 0, 3), null);
+check('stacking stops at the limit', t.embedGuard([], bread, 3, 3), 'depth');
+check('and below it goes on', t.embedGuard([], bread, 2, 3), null);
+check('a limit of one allows the outermost box only', t.embedGuard([], bread, 1, 1), 'depth');
+
+/* The cut has to happen before the editor is built, or the loop has already
+ * started by the time it is noticed. */
+const guardCall = source.indexOf('= embedGuard(');
+check('the guard is called at all', guardCall > 0, true);
+check('the guard runs before the nested editor exists',
+  guardCall < source.indexOf('new SectionEditorHost('), true);
+check('the box that is building is told to the boxes it builds',
+  /buildStack\.push\([\s\S]{0,400}?new SectionEditorHost\([\s\S]{0,400}?buildStack\.pop\(\)/.test(source), true);
+
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);

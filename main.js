@@ -152,6 +152,19 @@ function hasIndentedChild(lineTexts, lineNumber) {
   return false;
 }
 
+function sectionKey(path, segments) {
+  return path + '#' + (segments || []).map(normalizeHeading).join('#');
+}
+
+// A box whose section contains its own trigger builds the same box again, and
+// that never ends. Both cuts run before the nested editor exists, so the loop
+// stops at the first repeat instead of after it.
+function embedGuard(ancestorKeys, key, depth, maxDepth) {
+  if (ancestorKeys.indexOf(key) !== -1) return 'cycle';
+  if (depth >= maxDepth) return 'depth';
+  return null;
+}
+
 function collapseKeyFor(sourcePath, linktext, occurrence) {
   return `${sourcePath}::${linktext}::${occurrence || 0}`;
 }
@@ -395,8 +408,26 @@ class SectionEditorHost {
   }
 }
 
+function mountFromDom(view) {
+  let node = view && view.dom ? view.dom.parentElement : null;
+  while (node) {
+    if (node.__liveSectionsMount) return node.__liveSectionsMount;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// While a box builds its editor the editor is not attached to the box yet, so
+// the DOM says nothing about who owns it. The build stack answers for that
+// moment, the DOM for every later one.
+function viewBelongsTo(view, mount) {
+  const dom = view && view.dom;
+  if (!dom || !mount || !mount.bodyEl) return false;
+  return mount.bodyEl.contains(dom) || !dom.isConnected;
+}
+
 class SectionMount {
-  constructor(plugin, linktext, sourcePath, view, isInline, preview, occurrence, collapsible) {
+  constructor(plugin, linktext, sourcePath, view, isInline, preview, occurrence, collapsible, parent) {
     this.plugin = plugin;
     this.app = plugin.app;
     this.linktext = linktext;
@@ -409,6 +440,8 @@ class SectionMount {
     this.preview = !!preview;
     this.occurrence = occurrence || 0;
     this.collapsible = collapsible !== false;
+    this.parent = parent || null;
+    this.depth = this.parent ? this.parent.depth + 1 : 0;
     this.el.className =
       'live-sections-embed ' + (isInline ? 'is-inline' : 'is-block') + (preview ? ' is-preview' : '');
     this.el.__liveSectionsMount = this;
@@ -457,6 +490,14 @@ class SectionMount {
 
   get collapseKey() {
     return collapseKeyFor(this.sourcePath, this.linktext, this.occurrence);
+  }
+
+  ancestorKeys() {
+    const keys = [];
+    for (let mount = this.parent; mount; mount = mount.parent) {
+      if (mount.targetKey) keys.push(mount.targetKey);
+    }
+    return keys;
   }
 
   get collapsed() {
@@ -656,6 +697,20 @@ class SectionMount {
       return;
     }
     this.targetFile = file;
+    this.targetKey = sectionKey(file.path, this.parsed.segments);
+
+    const maxDepth = this.plugin.settings.maxEmbedDepth;
+    const blocked = embedGuard(this.ancestorKeys(), this.targetKey, this.depth, maxDepth);
+    if (blocked) {
+      this.renderHeader();
+      this.renderError(
+        blocked === 'cycle'
+          ? `Loop stopped: a box around this one already shows ${breadcrumbParts(this.parsed.path, this.parsed.segments).join(' > ')}.`
+          : `Nesting limit reached (${maxDepth} boxes deep). Click the link above to open the section.`
+      );
+      this.applyCollapsed();
+      return;
+    }
 
     let text;
     try {
@@ -684,11 +739,18 @@ class SectionMount {
     this.trailingBlank = split.trailing;
     const value = split.text;
     this.bodyEl.empty();
-    this.host = new SectionEditorHost(this.app, this.bodyEl, {
-      value,
-      file,
-      onChange: (next) => this.flush(next),
-    });
+    // boxes inside this one are built from here, and read the stack to find out
+    // which box they sit in
+    this.plugin.buildStack.push(this);
+    try {
+      this.host = new SectionEditorHost(this.app, this.bodyEl, {
+        value,
+        file,
+        onChange: (next) => this.flush(next),
+      });
+    } finally {
+      this.plugin.buildStack.pop();
+    }
     this.attachKeyboardBridge();
     this.renderHeader();
     this.applyCollapsed();
@@ -762,7 +824,7 @@ class SectionWidget extends WidgetType {
   toDOM(view) {
     const mount = new SectionMount(
       this.plugin, this.linktext, this.sourcePath, view, this.isInline, this.preview,
-      this.occurrence, this.collapsible
+      this.occurrence, this.collapsible, this.plugin.parentMountFor(view)
     );
     this.plugin.mounts.add(mount);
     return mount.el;
@@ -1069,6 +1131,7 @@ const DEFAULT_SETTINGS = {
   embedTrigger: '@',
   exitOnPlainArrow: true,
   writeDelayMs: 400,
+  maxEmbedDepth: 3,
 };
 
 class LiveSectionsPlugin extends obsidian.Plugin {
@@ -1078,6 +1141,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.collapsed = new Set(Array.isArray(data.collapsed) ? data.collapsed : []);
     this.saveCollapsed = obsidian.debounce(() => this.persist(), 500, true);
     this.mounts = new Set();
+    this.buildStack = [];
     this.embedLine = embedLineRegex(this.settings.embedTrigger);
 
     this.registerEditorExtension([
@@ -1214,6 +1278,12 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.refreshEditors();
   }
 
+  parentMountFor(view) {
+    const building = this.buildStack[this.buildStack.length - 1];
+    if (building && !building.destroyed && viewBelongsTo(view, building)) return building;
+    return mountFromDom(view);
+  }
+
   focusedMount() {
     const active = document.activeElement;
     if (!active) return null;
@@ -1323,6 +1393,19 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
+      .setName('Nesting limit')
+      .setDesc('How many boxes may stack inside one another. A section that leads back to itself stops on its own, whatever this says.')
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.maxEmbedDepth)).onChange(async (value) => {
+          const parsed = Number.parseInt(value, 10);
+          if (Number.isFinite(parsed) && parsed >= 1) {
+            this.plugin.settings.maxEmbedDepth = parsed;
+            await this.plugin.saveSettings();
+          }
+        })
+      );
+
+    new obsidian.Setting(containerEl)
       .setName('Write delay')
       .setDesc('Milliseconds of idle typing before an edited section is written to its source file.')
       .addText((text) =>
@@ -1347,6 +1430,8 @@ module.exports.__test = {
   breadcrumbParts,
   buildOccurrenceMap,
   hasIndentedChild,
+  sectionKey,
+  embedGuard,
   splitTrailingBlank,
   embedLineRegex,
   triggerPlacement,

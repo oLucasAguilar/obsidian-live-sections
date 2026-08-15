@@ -16,6 +16,10 @@ Sections collapse like a list item, with the arrow left of the bullet and your o
 
 ![](docs/collapsing.gif)
 
+## Loops
+
+A section that renders itself, straight (`@[[Recipes#Bread]]` written inside `Bread`) or around a ring of notes, would build the same box forever. The box that would repeat one already open around it says so instead of rendering, and boxes stop stacking at the nesting limit. Both cuts happen before the inner editor is built, so nothing hangs.
+
 ## Keyboard
 
 | Key | In the note | Inside a section |
@@ -35,7 +39,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 
 ## Settings
 
-The trigger character, whether arrow keys leave a section at its edges, and how long to wait after typing before writing to the source file.
+The trigger character, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
 
 ## Known gaps
 
