@@ -125,13 +125,15 @@ function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// A ! in front of the trigger asks for the quiet form: the title steps back and
+// the body sits at the indentation of the line the trigger is on.
 function embedLineRegex(trigger) {
-  return new RegExp(`^(\\s*(?:[-*+]\\s+|\\d+\\.\\s+)?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]\\s*$`);
+  return new RegExp(`^(\\s*(?:[-*+]\\s+|\\d+\\.\\s+)?)(!?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]\\s*$`);
 }
 
 // The same trigger anywhere in a line, so text may sit before and after it.
 function embedAnyRegex(trigger) {
-  return new RegExp(`${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]`, 'g');
+  return new RegExp(`(!?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]`, 'g');
 }
 
 // lastIndex on a global regex is state, so nothing here runs test or exec on
@@ -139,7 +141,12 @@ function embedAnyRegex(trigger) {
 function triggersInLine(lineText, anyRegex) {
   const hits = [];
   for (const match of String(lineText).matchAll(anyRegex)) {
-    hits.push({ linktext: match[1], from: match.index, to: match.index + match[0].length });
+    hits.push({
+      linktext: match[2],
+      quiet: match[1] === '!',
+      from: match.index,
+      to: match.index + match[0].length,
+    });
   }
   return hits;
 }
@@ -150,7 +157,7 @@ function triggerPlacement(lineText, embedRegex) {
   const match = lineText.match(embedRegex);
   if (!match) return null;
   const prefix = match[1] || '';
-  return { prefix, linktext: match[2], block: prefix.length === 0 };
+  return { prefix, quiet: match[2] === '!', linktext: match[3], block: prefix.length === 0 };
 }
 
 function indentWidth(text) {
@@ -181,9 +188,11 @@ function embedGuard(ancestorKeys, key, depth, maxDepth) {
 }
 
 // A line the trigger does not have to itself gets no fold arrow: the arrow sits
-// at the start of the line, where the text is, not the box.
+// at the start of the line, where the text is, not the box. The quiet form gets
+// none either: its whole point is a line that does not read as a list item.
 function canCollapse(lineTexts, lineNumber, placement) {
-  return !!placement && !hasIndentedChild(lineTexts, lineNumber);
+  if (!placement || placement.quiet) return false;
+  return !hasIndentedChild(lineTexts, lineNumber);
 }
 
 function layoutFor(placement) {
@@ -442,6 +451,13 @@ class SectionEditorHost {
   }
 }
 
+function mountFromNode(node) {
+  for (let el = node; el; el = el.parentElement) {
+    if (el.__liveSectionsMount) return el.__liveSectionsMount;
+  }
+  return null;
+}
+
 function mountFromDom(view) {
   let node = view && view.dom ? view.dom.parentElement : null;
   while (node) {
@@ -461,7 +477,7 @@ function viewBelongsTo(view, mount) {
 }
 
 class SectionMount {
-  constructor(plugin, linktext, sourcePath, view, layout, preview, occurrence, collapsible, parent) {
+  constructor(plugin, linktext, sourcePath, view, layout, preview, occurrence, collapsible, parent, quiet) {
     this.plugin = plugin;
     this.app = plugin.app;
     this.linktext = linktext;
@@ -476,7 +492,9 @@ class SectionMount {
     this.collapsible = collapsible !== false;
     this.parent = parent || null;
     this.depth = this.parent ? this.parent.depth + 1 : 0;
-    this.el.className = 'live-sections-embed is-' + layout + (preview ? ' is-preview' : '');
+    this.quiet = !!quiet;
+    this.el.className =
+      'live-sections-embed is-' + layout + (preview ? ' is-preview' : '') + (this.quiet ? ' is-quiet' : '');
     this.el.__liveSectionsMount = this;
 
     this.el.addEventListener('mousedown', (event) => event.stopPropagation());
@@ -576,8 +594,21 @@ class SectionMount {
       const pos = this.view.posAtDOM(this.el);
       const line = this.view.state.doc.lineAt(pos);
       const anchor = column ? Math.min(line.from + column, line.to) : line.from;
-      this.view.dispatch({ selection: { anchor }, scrollIntoView: true });
-      this.view.focus();
+      /* The focus effect rides along instead of waiting for the focus event.
+       * Sending the caret here and letting the event catch up meant the rebuild
+       * ran while the editor still counted as unfocused, so the line it landed
+       * on stayed rendered and swallowed the caret. */
+      this.plugin.movingCaret = true;
+      try {
+        this.view.dispatch({
+          selection: { anchor },
+          scrollIntoView: true,
+          effects: focusEffect.of(true),
+        });
+        this.view.focus();
+      } finally {
+        this.plugin.movingCaret = false;
+      }
     } catch (err) {
       console.error('[live-sections] could not reveal the trigger line', err);
     }
@@ -613,6 +644,9 @@ class SectionMount {
   }
 
   bindMarker() {
+    // A box that cannot collapse leaves the marker alone, so a quiet line has
+    // no hidden click target where a bullet used to be.
+    if (!this.collapsible) return;
     const marker = this.markerEl();
     if (!marker || marker.__liveSectionsBound) return;
     marker.__liveSectionsBound = true;
@@ -633,6 +667,38 @@ class SectionMount {
       this.bindMarker();
     });
     this.bufferObserver.observe(parent, { childList: true });
+  }
+
+  /* The box is inserted empty and filled a tick later, once the file has been
+   * read. By then CodeMirror has already measured a widget of almost no height
+   * and cached it, so the outer editor lays the line out for a box that is no
+   * longer there, and the inner editor sized itself inside that wrong box. Both
+   * have to be told to look again. Until now the next keystroke or click was
+   * what told them, which is why touching the line fixed it. */
+  /* A box inside a box sits in the editor of the box around it, not in the note.
+   * When the inner one fills, every editor between it and the note is holding a
+   * stale height, so the walk goes all the way up the stack. Measuring only the
+   * local view leaves the note itself laying out a box it still thinks is empty. */
+  settle() {
+    if (this.destroyed || !this.el.isConnected) return;
+    try {
+      for (let mount = this; mount; mount = mount.parent) {
+        const inner = mount.host && mount.host.cmView();
+        if (inner) inner.requestMeasure();
+        if (mount.view) mount.view.requestMeasure();
+      }
+    } catch (err) {
+      console.error('[live-sections] could not remeasure the box', err);
+    }
+  }
+
+  /* Nested boxes fill later still, each one growing this box after its own read.
+   * The body is what gets watched, not the box: on a bullet the box is display
+   * inline, and ResizeObserver reports nothing at all for an inline element. */
+  watchSize() {
+    if (this.destroyed || this.sizeObserver || typeof ResizeObserver === 'undefined') return;
+    this.sizeObserver = new ResizeObserver(() => this.settle());
+    this.sizeObserver.observe(this.bodyEl);
   }
 
   triggerLine() {
@@ -656,20 +722,38 @@ class SectionMount {
       if (skipped !== null) targetNumber = skipped;
     }
     if (targetNumber < 1 || targetNumber > doc.lines) {
+      /* The edge of a box inside a box is not the edge of the note. Running out
+       * of lines here means the box around this one has to carry the step on,
+       * from its own trigger line, or the caret has nowhere to land and stays. */
+      if (this.parent) {
+        this.parent.exitTo(dir, column, skipBlock);
+        return;
+      }
       this.revealTriggerLine();
       return;
     }
     const target = doc.line(targetNumber);
-    this.view.dispatch({
-      selection: { anchor: Math.min(target.from + column, target.to) },
-      scrollIntoView: true,
-    });
-    this.view.focus();
+    this.plugin.movingCaret = true;
+    try {
+      this.view.dispatch({
+        selection: { anchor: Math.min(target.from + column, target.to) },
+        scrollIntoView: true,
+        effects: focusEffect.of(true),
+      });
+      this.view.focus();
+    } finally {
+      this.plugin.movingCaret = false;
+    }
   }
 
   attachKeyboardBridge() {
     this.bodyEl.addEventListener('keydown', (event) => {
       if (this.destroyed) return;
+      /* This runs in the capture phase, and a box inside this one sits inside
+       * this body, so its keys reach here first. Answering them with this box's
+       * cursor, which is parked on a trigger line and so always at an edge,
+       * threw the caret out of both. The innermost box owns the key. */
+      if (mountFromNode(event.target) !== this) return;
 
       if (event.key === 'Escape') {
         if (event.defaultPrevented) return;
@@ -701,13 +785,43 @@ class SectionMount {
       if (!atEdge) return;
       event.preventDefault();
       event.stopPropagation();
+      /* The last line may be a trigger of its own, and then down means into
+       * that box, not out of this one. This runs in capture, ahead of the
+       * keymap that would otherwise have stepped in, so it answers for it. */
+      if (dir === 1 && triggersInLine(line.text, this.plugin.embedAny).length) {
+        const child = this.childMountOn(cm, line.number);
+        if (child && child.focusEdge(1, column)) return;
+      }
       if (dir === -1) this.revealTriggerLine(column);
       else this.exitTo(1, column, false);
     }, true);
   }
 
+  // The mount of a box that hangs off one of this box's own lines.
+  childMountOn(cm, lineNumber) {
+    for (const mount of this.plugin.mounts) {
+      if (mount === this || mount.destroyed || mount.view !== cm) continue;
+      const line = mount.triggerLine();
+      if (line && line.number === lineNumber) return mount;
+    }
+    return null;
+  }
+
+  /* Arrows walk visual lines, so stepping into a box lands on the line the eye
+   * would reach next. Coming down, that is the box's first line, trigger or
+   * not: a trigger line has text of its own to show and edit. Coming up, the
+   * last visual line is the last line of the last box inside it, however deep,
+   * so that one keeps descending. */
   focusEdge(dir, column) {
     if (this.destroyed || !this.host || this.collapsed) return false;
+    const cm = this.host.cmView();
+    if (cm && dir === -1) {
+      const lineNumber = cm.state.doc.lines;
+      if (triggersInLine(cm.state.doc.line(lineNumber).text, this.plugin.embedAny).length) {
+        const child = this.childMountOn(cm, lineNumber);
+        if (child && child.focusEdge(dir, column)) return true;
+      }
+    }
     return this.host.focusEdge(dir, column);
   }
 
@@ -787,6 +901,9 @@ class SectionMount {
     this.attachKeyboardBridge();
     this.renderHeader();
     this.applyCollapsed();
+    this.watchSize();
+    this.claimPendingCaret();
+    window.requestAnimationFrame(() => this.settle());
   }
 
   async refreshFromDisk() {
@@ -801,6 +918,7 @@ class SectionMount {
     const refreshed = splitTrailingBlank(section ? section.body : text);
     this.trailingBlank = refreshed.trailing;
     this.host.setValue(refreshed.text);
+    window.requestAnimationFrame(() => this.settle());
   }
 
   async writeBack(value) {
@@ -823,16 +941,60 @@ class SectionMount {
     }
   }
 
+  /* Revealing swaps the inline box for a preview one under the raw line, and
+   * they are different widgets, so the editor holding the caret is torn down
+   * and another is built with the same content. The caret is handed over
+   * instead of dying with the old one, which is what let the arrows step
+   * across the swap at all. */
+  rememberCaret() {
+    // A caret that was just sent somewhere on purpose is not one to hand over:
+    // the box dies because the caret left, not the other way round.
+    if (this.plugin.movingCaret) return;
+    const cm = this.host && this.host.hasFocus() && this.host.cmView();
+    if (!cm) return;
+    const cursor = cm.state.selection.main;
+    const line = cm.state.doc.lineAt(cursor.head);
+    this.plugin.pendingCaret = {
+      key: this.collapseKey,
+      line: line.number,
+      column: cursor.head - line.from,
+      at: Date.now(),
+    };
+  }
+
+  restoreCaret(pending) {
+    const cm = this.host && this.host.cmView();
+    if (!cm || this.destroyed) return;
+    const number = Math.min(Math.max(pending.line, 1), cm.state.doc.lines);
+    const target = cm.state.doc.line(number);
+    cm.dispatch({
+      selection: { anchor: Math.min(target.from + pending.column, target.to) },
+      scrollIntoView: true,
+    });
+    cm.focus();
+  }
+
+  claimPendingCaret() {
+    const pending = this.plugin.pendingCaret;
+    // stale means the swap it belonged to is long gone and someone else has
+    // since put the caret where they wanted it
+    if (!pending || pending.key !== this.collapseKey || Date.now() - pending.at > 1000) return;
+    this.plugin.pendingCaret = null;
+    window.requestAnimationFrame(() => this.restoreCaret(pending));
+  }
+
   destroy() {
     this.destroyed = true;
+    this.rememberCaret();
     if (this.bufferObserver) this.bufferObserver.disconnect();
+    if (this.sizeObserver) this.sizeObserver.disconnect();
     if (this.modifyRef) this.app.vault.offref(this.modifyRef);
     if (this.host) this.host.destroy();
   }
 }
 
 class SectionWidget extends WidgetType {
-  constructor(plugin, linktext, sourcePath, layout, preview, occurrence, collapsible) {
+  constructor(plugin, linktext, sourcePath, layout, preview, occurrence, collapsible, quiet) {
     super();
     this.plugin = plugin;
     this.linktext = linktext;
@@ -841,6 +1003,7 @@ class SectionWidget extends WidgetType {
     this.preview = !!preview;
     this.occurrence = occurrence || 0;
     this.collapsible = collapsible !== false;
+    this.quiet = !!quiet;
   }
 
   eq(other) {
@@ -850,14 +1013,15 @@ class SectionWidget extends WidgetType {
       other.layout === this.layout &&
       other.preview === this.preview &&
       other.occurrence === this.occurrence &&
-      other.collapsible === this.collapsible
+      other.collapsible === this.collapsible &&
+      other.quiet === this.quiet
     );
   }
 
   toDOM(view) {
     const mount = new SectionMount(
       this.plugin, this.linktext, this.sourcePath, view, this.layout, this.preview,
-      this.occurrence, this.collapsible, this.plugin.parentMountFor(view)
+      this.occurrence, this.collapsible, this.plugin.parentMountFor(view), this.quiet
     );
     this.plugin.mounts.add(mount);
     return mount.el;
@@ -880,21 +1044,26 @@ class SectionWidget extends WidgetType {
 // it is taller than a line. The title stays in the text, in place of the link,
 // and the body goes under the whole line as its own widget.
 class CrumbWidget extends WidgetType {
-  constructor(plugin, linktext, sourcePath) {
+  constructor(plugin, linktext, sourcePath, quiet) {
     super();
     this.plugin = plugin;
     this.linktext = linktext;
     this.sourcePath = sourcePath;
+    this.quiet = !!quiet;
   }
 
   eq(other) {
-    return other.linktext === this.linktext && other.sourcePath === this.sourcePath;
+    return (
+      other.linktext === this.linktext &&
+      other.sourcePath === this.sourcePath &&
+      other.quiet === this.quiet
+    );
   }
 
   toDOM(view) {
     const parsed = splitLinkText(this.linktext);
     const el = document.createElement('span');
-    el.className = 'live-sections-crumb';
+    el.className = 'live-sections-crumb' + (this.quiet ? ' is-quiet' : '');
     const crumb = el.createSpan({ cls: 'live-sections-breadcrumb is-embed-title' });
     crumb.setAttribute('data-href', this.linktext);
 
@@ -963,8 +1132,63 @@ class FoldWidget extends WidgetType {
 
 const refreshEffect = StateEffect.define();
 
+const focusEffect = StateEffect.define();
+
+/* An editor nobody is typing in has no cursor worth respecting. A nested editor
+ * starts its selection at position 0, and in a box that holds one section that
+ * position is the trigger line itself, so every nested trigger came up raw and
+ * stayed raw until it was clicked. A note restored with its cursor on a trigger
+ * line had the same thing happen. */
+const focusField = StateField.define({
+  create: () => false,
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(focusEffect)) return effect.value;
+    return value;
+  },
+});
+
+// Dispatching inside the update cycle throws, so the news goes out after it.
+function syncFocus(view) {
+  window.setTimeout(() => {
+    try {
+      if (!view.dom.isConnected) return;
+      const focused = view.hasFocus;
+      if (view.state.field(focusField, false) === focused) return;
+      view.dispatch({ effects: focusEffect.of(focused) });
+    } catch (err) {
+      console.error('[live-sections] could not record the focus change', err);
+    }
+  }, 0);
+}
+
+/* Rebuilding a box builds a new editor, and one built under a caret that is
+ * already inside it is focused from birth: no focus event ever fires, so an
+ * event-only field would sit at false for the rest of that editor's life. The
+ * constructor asking once is what covers that. */
+const focusWatcher = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      syncFocus(view);
+    }
+
+    update(update) {
+      if (update.focusChanged) syncFocus(update.view);
+    }
+  }
+);
+
 function triggerRevealed(plugin, state, line) {
-  if (plugin.focusedMount()) return false;
+  const focused = state.field(focusField, false);
+  if (focused === undefined) {
+    /* No field in this editor, so the old global rule stands: a caret anywhere
+     * in any box silences every reveal. That rule exists to keep the note from
+     * going raw under a box being typed in, but it also silenced the editor the
+     * caret was actually in, which is why a trigger inside a box never went raw
+     * however you clicked it. The field answers the same question per editor. */
+    if (plugin.focusedMount()) return false;
+  } else if (!focused) {
+    return false;
+  }
   return selectionTouches(state, line.from, line.to);
 }
 
@@ -1103,7 +1327,7 @@ function buildBlockDecorations(state, plugin) {
           Decoration.widget({
             widget: new SectionWidget(
               plugin, hit.linktext, sourcePath, layout, true,
-              occurrences.get(occurrenceKeyFor(n, hit.from)), collapsible
+              occurrences.get(occurrenceKeyFor(n, hit.from)), collapsible, hit.quiet
             ),
             side: 1,
           }).range(line.to)
@@ -1114,7 +1338,7 @@ function buildBlockDecorations(state, plugin) {
         Decoration.replace({
           widget: new SectionWidget(
             plugin, hits[0].linktext, sourcePath, 'block', false,
-            occurrences.get(occurrenceKeyFor(n, hits[0].from)), collapsible
+            occurrences.get(occurrenceKeyFor(n, hits[0].from)), collapsible, hits[0].quiet
           ),
           block: true,
         }).range(line.from, line.to)
@@ -1129,7 +1353,9 @@ function makeBlockField(plugin) {
   return StateField.define({
     create: (state) => guarded('block decorations', () => buildBlockDecorations(state, plugin)),
     update(value, tr) {
-      const refreshed = tr.effects.some((effect) => effect.is(refreshEffect));
+      const refreshed = tr.effects.some(
+        (effect) => effect.is(refreshEffect) || effect.is(focusEffect)
+      );
       if (tr.docChanged || tr.selection || refreshed) {
         return guarded('block decorations', () => buildBlockDecorations(tr.state, plugin));
       }
@@ -1165,6 +1391,15 @@ function buildInlineDecorations(view, plugin) {
         const collapsible = canCollapse(lineTexts, line.number, placement);
         const layout = layoutFor(placement);
 
+        // The marker of a quiet line is furniture too. It stays in the file,
+        // since the line is a list item, but it stops asking to be read. Once
+        // the cursor arrives and the link goes raw the whole line is raw, the
+        // marker with it, so the dimming lifts along with the box.
+        const revealed = triggerRevealed(plugin, state, line);
+        if (placement && placement.quiet && !revealed) {
+          ranges.push(Decoration.line({ class: 'live-sections-quiet-line' }).range(line.from));
+        }
+
         if (collapsible) {
           const key = collapseKeyFor(
             sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(line.number, hits[0].from))
@@ -1177,16 +1412,16 @@ function buildInlineDecorations(view, plugin) {
           );
         }
 
-        if (layout !== 'block' && !triggerRevealed(plugin, state, line)) {
+        if (layout !== 'block' && !revealed) {
           // one decoration per trigger, so the text between them stays put
           for (const hit of hits) {
             ranges.push(
               Decoration.replace({
                 widget: layout === 'shared'
-                  ? new CrumbWidget(plugin, hit.linktext, sourcePath)
+                  ? new CrumbWidget(plugin, hit.linktext, sourcePath, hit.quiet)
                   : new SectionWidget(
                     plugin, hit.linktext, sourcePath, layout, false,
-                    occurrences.get(occurrenceKeyFor(line.number, hit.from)), collapsible
+                    occurrences.get(occurrenceKeyFor(line.number, hit.from)), collapsible, hit.quiet
                   ),
               }).range(line.from + hit.from, line.from + hit.to)
             );
@@ -1212,7 +1447,13 @@ function makeViewPlugin(plugin) {
         const refreshed = update.transactions.some((tr) =>
           tr.effects.some((effect) => effect.is(refreshEffect))
         );
-        if (update.docChanged || update.viewportChanged || update.selectionSet || refreshed) {
+        // Focus decides whether a trigger reads raw, so it rebuilds like the
+        // rest. Its own transaction carries an effect and nothing else, which
+        // is neither a doc change nor a selection, and went unnoticed here.
+        const refocused = update.focusChanged || update.transactions.some((tr) =>
+          tr.effects.some((effect) => effect.is(focusEffect))
+        );
+        if (update.docChanged || update.viewportChanged || update.selectionSet || refreshed || refocused) {
           this.decorations = guarded('inline decorations', () => buildInlineDecorations(update.view, plugin));
         }
         for (const mount of plugin.mounts) {
@@ -1242,14 +1483,22 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.saveCollapsed = obsidian.debounce(() => this.persist(), 500, true);
     this.mounts = new Set();
     this.buildStack = [];
+    this.pendingCaret = null;
+    this.movingCaret = false;
     this.setTrigger();
 
     this.registerEditorExtension([
+      focusField,
+      focusWatcher,
       Prec.highest(makeViewPlugin(this)),
       Prec.highest(makeBlockField(this)),
       makeCursorKeymap(this),
     ]);
     this.addSettingTab(new LiveSectionsSettingTab(this.app, this));
+
+    for (const type of ['focusin', 'focusout']) {
+      this.registerDomEvent(document, type, () => this.syncAllFocus());
+    }
 
     // On Linux a middle click pastes the primary selection into whatever is
     // editable under the pointer. Inside a box that is the wrong editor, or a
@@ -1317,13 +1566,47 @@ class LiveSectionsPlugin extends obsidian.Plugin {
             (el.childNodes.length === 0 ? ' EMPTY' : '')
           );
         };
+        /* The columns that decide whether a quiet body lines up: where the
+         * marker of the trigger line is drawn, and where the body starts. */
+        const columns = (mount) => {
+          const line = mount.el.closest('.cm-line');
+          if (!line) return [];
+          const style = window.getComputedStyle(line);
+          const marker = line.querySelector('.cm-formatting-list, .list-bullet, .cm-list-bullet');
+          const body = mount.bodyEl;
+          const out = [
+            `   line  left=${line.getBoundingClientRect().left.toFixed(1)}` +
+            ` padStart=${style.paddingInlineStart} textIndent=${style.textIndent}`,
+          ];
+          if (marker) out.push(`   mark  left=${marker.getBoundingClientRect().left.toFixed(1)}`);
+          if (body) out.push(`   body  left=${body.getBoundingClientRect().left.toFixed(1)}`);
+          if (marker && body) {
+            const gap = body.getBoundingClientRect().left - marker.getBoundingClientRect().left;
+            out.push(`   PULL  ${gap.toFixed(1)}px, the body sits this far right of the marker`);
+            /* What the eye actually compares is the marker of the line against
+             * the first marker rendered inside the box, which is a step further
+             * in than the body edge. */
+            const inner = body.querySelector('.cm-formatting-list, .list-bullet, .cm-list-bullet');
+            if (inner) {
+              const drift = inner.getBoundingClientRect().left - marker.getBoundingClientRect().left;
+              out.push(`   DRIFT ${drift.toFixed(1)}px, first marker inside the box against this line's`);
+            }
+          }
+          return out;
+        };
+
         const rows = [];
         for (const mount of this.mounts) {
           if (!mount.el.isConnected) {
             rows.push(`${mount.linktext}: not in the document`);
             continue;
           }
-          const lines = [`${mount.linktext}${mount.preview ? ' (preview)' : ''}`];
+          const lines = [
+            `${mount.linktext}${mount.preview ? ' (preview)' : ''}${mount.quiet ? ' (quiet)' : ''}` +
+            ` depth=${mount.depth} host=${mount.host ? mount.host.mode : 'none'}` +
+            ` parent=${mount.parent ? mount.parent.linktext : 'note'}`,
+          ];
+          lines.push(...columns(mount));
           const host = mount.el.parentElement;
           if (host) {
             lines.push(describe(host, 'host  '));
@@ -1405,6 +1688,27 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     const building = this.buildStack[this.buildStack.length - 1];
     if (building && !building.destroyed && viewBelongsTo(view, building)) return building;
     return mountFromDom(view);
+  }
+
+  /* Every editor that can hold a trigger, the notes on screen and the editor
+   * inside each box. A focus change is news for the editor losing it as much as
+   * for the one taking it, and the one losing it may get no update of its own,
+   * so both ends are told from here rather than each waiting for its own event. */
+  allEditorViews() {
+    const views = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const cm = leaf.view && leaf.view.editor && leaf.view.editor.cm;
+      if (cm) views.push(cm);
+    });
+    for (const mount of this.mounts) {
+      const cm = !mount.destroyed && mount.host && mount.host.cmView();
+      if (cm) views.push(cm);
+    }
+    return views;
+  }
+
+  syncAllFocus() {
+    for (const view of this.allEditorViews()) syncFocus(view);
   }
 
   focusedMount() {

@@ -16,6 +16,14 @@ Obsidian's own `![[Note#Heading]]` renders the section read only, in embed styli
 
 A line the trigger has to itself keeps its old shape, block at the start of a line and inline after a list marker, with the fold arrow. A shared line has no arrow, since that arrow belongs to the line, not to the box.
 
+## The quiet form
+
+`!@[[Recipes#Bread]]` renders the same section with the title out of the way: faint, no link colour, lit up again when the pointer is on it. Clicking still works, so the link stays editable.
+
+The body drops its guide line and lines up with the line the trigger is on, instead of stepping one level in. Written on a bullet, the bullets that come out land on the same column as the bullet you wrote it on.
+
+How far left the body travels is `--live-sections-quiet-pull`, half a list indent by default. A theme with its own list metrics may need another number, and the layout report prints the two columns that decide it.
+
 ## Collapsing
 
 Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.

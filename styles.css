@@ -111,6 +111,52 @@
   overflow: visible;
 }
 
+/* the quiet form, !@[[Note#Heading]]: the title is furniture, not a link, and
+   the body lines up with the line the trigger sits on instead of stepping in */
+.live-sections-embed.is-quiet .live-sections-embed-header,
+.live-sections-crumb.is-quiet {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.5;
+  transition: opacity 100ms ease, color 100ms ease;
+}
+
+.live-sections-embed.is-quiet .live-sections-embed-header:hover,
+.live-sections-crumb.is-quiet:hover {
+  opacity: 1;
+}
+
+.live-sections-embed.is-quiet .live-sections-breadcrumb,
+.live-sections-crumb.is-quiet .live-sections-breadcrumb {
+  color: var(--text-faint);
+  text-decoration: none;
+}
+
+.live-sections-embed.is-quiet .live-sections-breadcrumb:hover,
+.live-sections-crumb.is-quiet .live-sections-breadcrumb:hover {
+  color: var(--link-color);
+}
+
+/* The line keeps its marker, since it is a list item in the file, but the
+   marker stops asking to be read and no longer answers a click. Direct child
+   only: the box hangs inside this same line, so a descendant selector reaches
+   every marker of the section rendered inside it and blanks those too. */
+.live-sections-quiet-line > .cm-formatting-list,
+.live-sections-quiet-line > .list-bullet {
+  opacity: 0;
+  cursor: text;
+}
+
+/* how far left the body has to travel to sit on the marker of its own line.
+   Measured with the report command: a whole list indent overshoots by half of
+   itself and pushes the markers out of the editor, where they get clipped.
+   Half is also what the loud box nudges by, which is the same distance. */
+.live-sections-embed.is-quiet .live-sections-embed-body {
+  --live-sections-quiet-pull: calc(var(--list-indent, 2em) / 2 + 2px);
+  border-left: none;
+  padding-left: 0;
+  margin-left: calc(-1 * var(--live-sections-quiet-pull));
+}
+
 .live-sections-at {
   margin-right: 0.3em;
   opacity: 0.7;

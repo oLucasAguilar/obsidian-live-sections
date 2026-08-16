@@ -17,6 +17,8 @@ const fakeObsidian = {
   Plugin: Fake, PluginSettingTab: Fake, Setting: Fake, Notice: Fake,
   debounce: (fn) => fn, editorInfoField: null, Keymap: { isModEvent: () => false },
 };
+// read at module load, unlike the rest, which only runs inside a real editor
+Fake.updateListener = { of: () => ({}) };
 const fakeView = { Decoration: Fake, EditorView: Fake, ViewPlugin: Fake, WidgetType: Fake, keymap: Fake };
 const fakeState = { Prec: Fake, StateEffect: Fake, StateField: Fake };
 
@@ -52,7 +54,7 @@ check('another note is named first', t.breadcrumbParts('dir/Note', ['One']), ['N
 const AT = t.embedLineRegex('@');
 check('plain trigger', AT.test('@[[Note#One]]'), true);
 check('inside a bullet', AT.test('  - @[[Note#One]]'), true);
-check('captures the link', '@[[Note#One]]'.match(AT)[2], 'Note#One');
+check('captures the link', '@[[Note#One]]'.match(AT)[3], 'Note#One');
 check('a plain link is not a trigger', AT.test('[[Note#One]]'), false);
 check('an obsidian embed is not a trigger', AT.test('![[Note#One]]'), false);
 check('a line to itself is what this regex answers', AT.test('@[[Note#One]] and more'), false);
@@ -63,7 +65,8 @@ const ANY = t.embedAnyRegex('@');
 const hits = (text) => t.triggersInLine(text, ANY);
 check('text before and after still renders', hits('note this @[[Note#One]] please').map((h) => h.linktext),
   ['Note#One']);
-check('the box replaces the link only', hits('ab @[[A#B]] cd')[0], { linktext: 'A#B', from: 3, to: 11 });
+check('the box replaces the link only', hits('ab @[[A#B]] cd')[0],
+  { linktext: 'A#B', quiet: false, from: 3, to: 11 });
 check('two on a line are two boxes', hits('@[[A#B]] and @[[C#D]]').map((h) => h.from), [0, 13]);
 check('a plain link is left alone', hits('[[A#B]]'), []);
 check('an obsidian embed is left alone', hits('![[A#B]]'), []);
@@ -73,14 +76,32 @@ check('a trigger of several characters works too',
 
 /* ---- block or inline, the rule Obsidian uses for its own embeds ---- */
 check('alone at the start of the line is a block',
-  t.triggerPlacement('@[[A#B]]', AT), { prefix: '', linktext: 'A#B', block: true });
+  t.triggerPlacement('@[[A#B]]', AT), { prefix: '', quiet: false, linktext: 'A#B', block: true });
 check('a bullet in front forces inline',
-  t.triggerPlacement('- @[[A#B]]', AT), { prefix: '- ', linktext: 'A#B', block: false });
+  t.triggerPlacement('- @[[A#B]]', AT), { prefix: '- ', quiet: false, linktext: 'A#B', block: false });
 check('so does a nested bullet',
-  t.triggerPlacement('    - @[[A#B]]', AT), { prefix: '    - ', linktext: 'A#B', block: false });
+  t.triggerPlacement('    - @[[A#B]]', AT), { prefix: '    - ', quiet: false, linktext: 'A#B', block: false });
 check('so does plain indentation', t.triggerPlacement('  @[[A#B]]', AT).block, false);
 check('and a numbered item', t.triggerPlacement('1. @[[A#B]]', AT).block, false);
 check('a line without a trigger has no placement', t.triggerPlacement('- [[A#B]]', AT), null);
+
+/* ---- the quiet form ---- */
+check('a bang in front asks for quiet', t.triggerPlacement('- !@[[A#B]]', AT).quiet, true);
+check('quiet keeps the link', t.triggerPlacement('- !@[[A#B]]', AT).linktext, 'A#B');
+check('quiet keeps the bullet in the prefix', t.triggerPlacement('- !@[[A#B]]', AT).prefix, '- ');
+check('quiet alone on a line is still a block', t.layoutFor(t.triggerPlacement('!@[[A#B]]', AT)), 'block');
+check('quiet in the middle of a line is read too',
+  hits('note !@[[A#B]] here')[0], { linktext: 'A#B', quiet: true, from: 5, to: 14 });
+check('the bang is swallowed by the widget, not left on the line',
+  'note !@[[A#B]] here'.slice(hits('note !@[[A#B]] here')[0].from, hits('note !@[[A#B]] here')[0].to),
+  '!@[[A#B]]');
+check('a bang without the trigger is still not a trigger', hits('![[A#B]]'), []);
+check('a quiet line gets no fold arrow',
+  t.canCollapse(['- !@[[A#B]]'], 1, t.triggerPlacement('- !@[[A#B]]', AT)), false);
+check('a loud line on the same shape still gets one',
+  t.canCollapse(['- @[[A#B]]'], 1, t.triggerPlacement('- @[[A#B]]', AT)), true);
+check('quiet works with a trigger of several characters',
+  t.triggersInLine('!++[[A#B]]', t.embedAnyRegex('++'))[0].quiet, true);
 
 /* ---- finding the section a link points at ---- */
 const note = [
