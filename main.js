@@ -495,6 +495,19 @@ class SectionMount {
     this.quiet = !!quiet;
     this.el.className =
       'live-sections-embed is-' + layout + (preview ? ' is-preview' : '') + (this.quiet ? ' is-quiet' : '');
+    /* Boxes inside boxes end within a few pixels of one another, so rules of
+     * equal length read as one smudged line instead of two endings. Each level
+     * in closes earlier. Set on the box, so the box inside inherits its own
+     * value and not this one. Where the rule starts is CSS, not this: it hangs
+     * off the quiet pull, which is a CSS number. */
+    /* A length, not a share of the body: the quiet body is widened by its own
+     * negative margin and a plain one is narrowed by the guide padding, so the
+     * same percentage of each ended in a different place. Equal starts and an
+     * equal length is what makes the two forms close on the same pixel. */
+    this.el.style.setProperty(
+      '--live-sections-rule-width',
+      `${Math.max(6, 20 - this.depth * 5)}em`
+    );
     this.el.__liveSectionsMount = this;
 
     this.el.addEventListener('mousedown', (event) => event.stopPropagation());
@@ -1473,6 +1486,7 @@ const DEFAULT_SETTINGS = {
   exitOnPlainArrow: true,
   writeDelayMs: 400,
   maxEmbedDepth: 3,
+  ruleColor: 'link',
 };
 
 class LiveSectionsPlugin extends obsidian.Plugin {
@@ -1486,6 +1500,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.pendingCaret = null;
     this.movingCaret = false;
     this.setTrigger();
+    this.applyRuleColor();
 
     this.registerEditorExtension([
       focusField,
@@ -1636,6 +1651,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
 
   onunload() {
     this.unpatchFoldCommand();
+    document.body.classList.remove('live-sections-rule-link');
     for (const mount of this.mounts) mount.destroy();
     this.mounts.clear();
   }
@@ -1668,8 +1684,14 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.embedAny = embedAnyRegex(this.settings.embedTrigger);
   }
 
+  // the closing rule is drawn by CSS, so the choice is carried as a body class
+  applyRuleColor() {
+    document.body.classList.toggle('live-sections-rule-link', this.settings.ruleColor === 'link');
+  }
+
   async saveSettings() {
     this.setTrigger();
+    this.applyRuleColor();
     await this.persist();
     this.refreshEditors();
   }
@@ -1795,6 +1817,20 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
           this.plugin.settings.sectionEmbeds = value;
           await this.plugin.saveSettings();
         })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName('Closing rule colour')
+      .setDesc('The short line under the last row of a section, saying where it ends.')
+      .addDropdown((drop) =>
+        drop
+          .addOption('link', 'Link colour')
+          .addOption('faint', 'Faint grey')
+          .setValue(this.plugin.settings.ruleColor)
+          .onChange(async (value) => {
+            this.plugin.settings.ruleColor = value;
+            await this.plugin.saveSettings();
+          })
       );
 
     new obsidian.Setting(containerEl)

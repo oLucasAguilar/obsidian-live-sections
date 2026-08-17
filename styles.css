@@ -71,6 +71,43 @@
   margin-left: calc(-1 * var(--live-sections-gutter) - 2px);
 }
 
+/* Where the section stops and the note goes on. The guide down the side says it
+   for the whole height, this says it once, at the end. A pseudo element and not
+   a border-bottom: a border spans the whole box, and this one has to start
+   clear of the markers and stop halfway. */
+.live-sections-embed-body::after {
+  content: '';
+  display: block;
+  height: 1px;
+  width: var(--live-sections-rule-width, 20em);
+  max-width: 100%;
+  margin-top: 0.25em;
+  margin-left: var(--live-sections-rule-inset, 0.15em);
+  background-color: color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
+}
+
+/* Every layout shoves the body sideways by a different amount: the quiet form
+   drags it left onto the marker, a bullet pushes it right by the nudge and the
+   guide inset. The rule is not part of that argument. Each one gives its own
+   shift back, so the rule lands on the text column of the line it closes, plus
+   a hair, whatever the box around it is doing. That is why the same trigger
+   with and without the bang now draws the rule in the same place.
+
+   Direct child in both: a box inside another box never took the outer box's
+   shift and must not pay it back. */
+.live-sections-embed.is-quiet > .live-sections-embed-body::after {
+  margin-left: calc(var(--live-sections-rule-inset, 0.15em) + var(--live-sections-quiet-pull));
+}
+
+.live-sections-embed.is-inline:not(.is-quiet) > .live-sections-embed-body::after {
+  margin-left: calc(var(--live-sections-rule-inset, 0.15em) - var(--live-sections-nudge));
+}
+
+/* the colour of a link, whatever the theme makes that, to say the box is one */
+body.live-sections-rule-link .live-sections-embed-body::after {
+  background-color: color-mix(in srgb, var(--link-color) 30%, transparent);
+}
+
 /* draws the rule on Obsidian's indentation guide line */
 .live-sections-embed.is-inline .live-sections-embed-body {
   --live-sections-guide-inset: calc(
@@ -113,25 +150,25 @@
 
 /* the quiet form, !@[[Note#Heading]]: the title is furniture, not a link, and
    the body lines up with the line the trigger sits on instead of stepping in */
-.live-sections-embed.is-quiet .live-sections-embed-header,
+.live-sections-embed.is-quiet > .live-sections-embed-header,
 .live-sections-crumb.is-quiet {
   font-size: var(--font-ui-smaller);
   opacity: 0.5;
   transition: opacity 100ms ease, color 100ms ease;
 }
 
-.live-sections-embed.is-quiet .live-sections-embed-header:hover,
+.live-sections-embed.is-quiet > .live-sections-embed-header:hover,
 .live-sections-crumb.is-quiet:hover {
   opacity: 1;
 }
 
-.live-sections-embed.is-quiet .live-sections-breadcrumb,
+.live-sections-embed.is-quiet > .live-sections-embed-header .live-sections-breadcrumb,
 .live-sections-crumb.is-quiet .live-sections-breadcrumb {
   color: var(--text-faint);
   text-decoration: none;
 }
 
-.live-sections-embed.is-quiet .live-sections-breadcrumb:hover,
+.live-sections-embed.is-quiet > .live-sections-embed-header .live-sections-breadcrumb:hover,
 .live-sections-crumb.is-quiet .live-sections-breadcrumb:hover {
   color: var(--link-color);
 }
@@ -150,7 +187,7 @@
    Measured with the report command: a whole list indent overshoots by half of
    itself and pushes the markers out of the editor, where they get clipped.
    Half is also what the loud box nudges by, which is the same distance. */
-.live-sections-embed.is-quiet .live-sections-embed-body {
+.live-sections-embed.is-quiet > .live-sections-embed-body {
   --live-sections-quiet-pull: calc(var(--list-indent, 2em) / 2 + 2px);
   border-left: none;
   padding-left: 0;

@@ -24,6 +24,12 @@ The body drops its guide line and lines up with the line the trigger is on, inst
 
 How far left the body travels is `--live-sections-quiet-pull`, half a list indent by default. A theme with its own list metrics may need another number, and the layout report prints the two columns that decide it.
 
+## Where a section ends
+
+A short rule under the last row of every box, in the colour of a link, saying where the section stops and the note goes on. It sits on the text column of the line it closes and shortens a step for each box it sits inside, so nesting reads at a glance.
+
+It can be a faint grey instead, in the settings.
+
 ## Collapsing
 
 Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.
@@ -53,7 +59,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 
 ## Settings
 
-The trigger character, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
+The trigger character, the colour of the closing rule, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
 
 ## Known gaps
 
