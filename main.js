@@ -1480,8 +1480,143 @@ function makeViewPlugin(plugin) {
   );
 }
 
+/* ---- reading mode ----
+ *
+ * A hover popover and the reading view never go near CodeMirror, so none of the
+ * decorations above run there and the trigger shows up as written. By the time
+ * a post processor sees it the line is already HTML: the trigger sits at the end
+ * of the text node in front of an internal link, and the link carries the
+ * target. Nothing here is editable. The section is rendered and read only,
+ * because a popover closes as soon as the pointer leaves and an editor inside
+ * one loses whatever was typed. */
+
+// The trigger, and the bang in front of it when the quiet form was used, are the
+// tail of the text before the link.
+function readTriggerSplit(text, trigger) {
+  const value = String(text);
+  if (!trigger || !value.endsWith(trigger)) return null;
+  const head = value.slice(0, value.length - trigger.length);
+  const quiet = head.endsWith('!');
+  return { cut: quiet ? head.length - 1 : head.length, quiet };
+}
+
+/* Which sections are already open around this one. A rendered section is filled
+ * by the same post processor running again, and that pass is handed the body
+ * element itself, so the answer can be left on it for the pass to find. */
+function readEmbedContext(node) {
+  for (let el = node; el; el = el.parentElement) {
+    if (el.__liveSectionsRead) return el.__liveSectionsRead;
+  }
+  return { keys: [], depth: 0 };
+}
+
+function renderMarkdownInto(app, markdown, el, sourcePath, component) {
+  const renderer = obsidian.MarkdownRenderer;
+  if (renderer && typeof renderer.render === 'function') {
+    return renderer.render(app, markdown, el, sourcePath, component);
+  }
+  return renderer.renderMarkdown(markdown, el, sourcePath, component);
+}
+
+function makeReadEmbed(plugin, linktext, sourcePath, quiet, depth) {
+  const parsed = splitLinkText(linktext);
+  const el = document.createElement('span');
+  el.className = 'live-sections-embed is-read' + (quiet ? ' is-quiet' : '');
+  // same taper as the editor: a box inside a box closes earlier than the one
+  // around it, so two endings a few pixels apart do not read as one smudge
+  el.style.setProperty('--live-sections-rule-width', `${Math.max(6, 20 - depth * 5)}em`);
+
+  const headerEl = el.createDiv({ cls: 'live-sections-embed-header' });
+  const crumb = headerEl.createSpan({ cls: 'live-sections-breadcrumb is-embed-title' });
+  crumb.setAttribute('data-href', linktext);
+  renderBreadcrumb(crumb, breadcrumbParts(parsed.path, parsed.segments));
+  crumb.setAttribute('title', 'Click to open, ctrl or middle click to open in a tab.');
+  wireLink(plugin.app, crumb, linktext, sourcePath);
+
+  const bodyEl = el.createDiv({ cls: 'live-sections-embed-body' });
+  return { el, bodyEl, parsed };
+}
+
+async function fillReadEmbed(plugin, box, linktext, sourcePath, context, component) {
+  const app = plugin.app;
+  const parsed = box.parsed;
+  const fail = (message) => {
+    box.bodyEl.empty();
+    box.bodyEl.createDiv({ cls: 'live-sections-error' }).setText(message);
+  };
+
+  const { file } = resolveLink(app, linktext, sourcePath);
+  if (!file) return fail(`Note not found: ${parsed.path}`);
+  if (file.path === sourcePath && parsed.segments.length === 0) {
+    return fail('Refusing to embed the same note into itself.');
+  }
+  if (parsed.isBlockRef) return fail('Block references are not supported yet, use a heading.');
+
+  const key = sectionKey(file.path, parsed.segments);
+  const maxDepth = plugin.settings.maxEmbedDepth;
+  const blocked = embedGuard(context.keys, key, context.depth, maxDepth);
+  if (blocked) {
+    return fail(
+      blocked === 'cycle'
+        ? `Loop stopped: a box around this one already shows ${breadcrumbParts(parsed.path, parsed.segments).join(' > ')}.`
+        : `Nesting limit reached (${maxDepth} boxes deep). Click the link above to open the section.`
+    );
+  }
+
+  let text;
+  try {
+    text = await app.vault.cachedRead(file);
+  } catch (err) {
+    return fail(`Could not read ${file.path}`);
+  }
+
+  const section = parsed.segments.length ? findSection(text, parsed.segments) : null;
+  if (parsed.segments.length && !section) {
+    return fail(`Heading not found: ${parsed.segments.join(' > ')}`);
+  }
+
+  const body = splitTrailingBlank(section ? section.body : text).text;
+  box.bodyEl.__liveSectionsRead = { keys: context.keys.concat(key), depth: context.depth + 1 };
+  try {
+    await renderMarkdownInto(app, body, box.bodyEl, file.path, component);
+  } catch (err) {
+    console.error('[live-sections] reading mode render failed', linktext, err);
+    fail(`Could not render ${file.path}`);
+  }
+}
+
+function processReadEmbeds(plugin, el, ctx) {
+  if (!plugin.settings.sectionEmbeds || !plugin.settings.readingModeEmbeds) return undefined;
+  const trigger = plugin.settings.embedTrigger;
+  const sourcePath = (ctx && ctx.sourcePath) || '';
+  const context = readEmbedContext(el);
+  const jobs = [];
+
+  for (const anchor of Array.from(el.querySelectorAll('a.internal-link'))) {
+    const before = anchor.previousSibling;
+    if (!before || before.nodeType !== 3) continue;
+    const split = readTriggerSplit(before.nodeValue, trigger);
+    if (!split) continue;
+    const linktext = anchor.getAttribute('data-href');
+    if (!linktext) continue;
+
+    const box = makeReadEmbed(plugin, linktext, sourcePath, split.quiet, context.depth);
+    // swapped in before anything is read, so the raw trigger is never on screen
+    // while the file is being fetched
+    before.nodeValue = before.nodeValue.slice(0, split.cut);
+    anchor.replaceWith(box.el);
+
+    const component = new obsidian.MarkdownRenderChild(box.el);
+    if (ctx && typeof ctx.addChild === 'function') ctx.addChild(component);
+    jobs.push(fillReadEmbed(plugin, box, linktext, sourcePath, context, component));
+  }
+
+  return jobs.length ? Promise.all(jobs).then(() => undefined) : undefined;
+}
+
 const DEFAULT_SETTINGS = {
   sectionEmbeds: true,
+  readingModeEmbeds: true,
   embedTrigger: '@',
   exitOnPlainArrow: true,
   writeDelayMs: 400,
@@ -1509,6 +1644,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
       Prec.highest(makeBlockField(this)),
       makeCursorKeymap(this),
     ]);
+    this.registerMarkdownPostProcessor((el, ctx) => processReadEmbeds(this, el, ctx));
     this.addSettingTab(new LiveSectionsSettingTab(this.app, this));
 
     for (const type of ['focusin', 'focusout']) {
@@ -1641,6 +1777,39 @@ class LiveSectionsPlugin extends obsidian.Plugin {
           }
           rows.push(lines.join('\n'));
         }
+
+        /* A box while reading has no mount and no editor: it is markdown the
+         * post processor rendered, hanging inside the paragraph or list item the
+         * trigger was written on. What decides whether it looks right is the
+         * same question as in the editor, asked of plain HTML: where the host
+         * item's marker is drawn against the first marker rendered inside. */
+        for (const el of Array.from(document.querySelectorAll('.live-sections-embed.is-read'))) {
+          const host = el.parentElement;
+          const header = el.querySelector(':scope > .live-sections-embed-header');
+          const body = el.querySelector(':scope > .live-sections-embed-body');
+          const lines = [
+            `${(header && header.textContent) || '(no title)'} (reading)` +
+            `${el.classList.contains('is-quiet') ? ' (quiet)' : ''}` +
+            ` host=<${host ? host.tagName.toLowerCase() : 'none'}>`,
+          ];
+          const left = (node) => node.getBoundingClientRect().left;
+          if (host) lines.push(`   host  left=${left(host).toFixed(1)}`);
+          if (header) lines.push(`   title left=${left(header).toFixed(1)}`);
+          if (body) {
+            lines.push(`   body  left=${left(body).toFixed(1)}`);
+            const inner = body.querySelector('li');
+            if (inner) {
+              lines.push(`   item  left=${left(inner).toFixed(1)}` +
+                ` marginStart=${window.getComputedStyle(inner).marginInlineStart}`);
+              if (host) {
+                lines.push(`   DRIFT ${(left(inner) - left(host)).toFixed(1)}px,` +
+                  ' first item inside the box against the line it hangs on');
+              }
+            }
+          }
+          rows.push(lines.join('\n'));
+        }
+
         const text = rows.length ? rows.join('\n\n') : 'No rendered section boxes in this window.';
         console.log('[live-sections] layout\n' + text);
         new obsidian.Notice('Layout report written to the console (ctrl+shift+i).', 6000);
@@ -1820,6 +1989,16 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
+      .setName('Section embeds while reading')
+      .setDesc('Show the section in a hover preview and in reading view too, rendered and read only. Off leaves the trigger as written outside the editor.')
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.readingModeEmbeds).onChange(async (value) => {
+          this.plugin.settings.readingModeEmbeds = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new obsidian.Setting(containerEl)
       .setName('Closing rule colour')
       .setDesc('The short line under the last row of a section, saying where it ends.')
       .addDropdown((drop) =>
@@ -1905,4 +2084,5 @@ module.exports.__test = {
   triggerPlacement,
   stepTargetLine,
   skipTargetLine,
+  readTriggerSplit,
 };

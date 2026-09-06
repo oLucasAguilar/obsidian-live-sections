@@ -36,6 +36,14 @@ Sections collapse like a list item, with the arrow left of the bullet and your o
 
 ![](docs/collapsing.gif)
 
+## Reading and hover previews
+
+Outside the editor there is no editor: a hover preview and reading view render the section instead, read only, with the same title, the same faint quiet form and the same closing rule. Before this, a note that used the trigger read as `@[[Note#Heading]]` in every preview of it, which is the one place the raw link says least.
+
+Read only on purpose. A popover closes as soon as the pointer leaves it, and an editor that goes away like that takes what you typed with it.
+
+Nesting, loops and the depth limit work there as they do in the editor. Can be turned off in the settings.
+
 ## Loops
 
 A section that renders itself, straight (`@[[Recipes#Bread]]` written inside `Bread`) or around a ring of notes, would build the same box forever. The box that would repeat one already open around it says so instead of rendering, and boxes stop stacking at the nesting limit. Both cuts happen before the inner editor is built, so nothing hangs.
@@ -59,7 +67,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 
 ## Settings
 
-The trigger character, the colour of the closing rule, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
+The trigger character, the colour of the closing rule, whether sections render while reading, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
 
 ## Known gaps
 

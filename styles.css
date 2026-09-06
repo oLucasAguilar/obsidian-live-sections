@@ -194,6 +194,49 @@ body.live-sections-rule-link .live-sections-embed-body::after {
   margin-left: calc(-1 * var(--live-sections-quiet-pull));
 }
 
+/* Reading mode and hover previews. There is no editor and no list marker to line
+   up with, so the box is plain block flow: the body keeps the guide down its
+   side and gives back every shift the editor layouts needed. The quiet pull goes
+   with them, or the closing rule would hang left of a marker that is not there. */
+.live-sections-embed.is-read {
+  display: block;
+}
+
+.live-sections-embed.is-read > .live-sections-embed-body {
+  margin-left: 0;
+}
+
+.live-sections-embed.is-read.is-quiet > .live-sections-embed-body {
+  --live-sections-quiet-pull: 0px;
+  margin-left: 0;
+}
+
+/* Reading view indents a list by pushing each item sideways, not by padding the
+   list: `.markdown-rendered ul > li` gets 3ch and `.markdown-rendered ul ul >
+   li` gets a full list indent. That second one reads descendants, and the body
+   of a box hangs inside the list item the trigger was written on, so every list
+   rendered in there counted as one level deeper than it is. The title sat on the
+   line and the content three steps out from it.
+
+   At zero the marker is drawn just left of the body, which lands it on the
+   column of the marker of the trigger line, the same place the editor puts it.
+   Direct child of the body, so lists written inside the section keep their own
+   nesting. */
+.live-sections-embed.is-read > .live-sections-embed-body > ul > li,
+.live-sections-embed.is-read > .live-sections-embed-body > ol > li {
+  margin-inline-start: 0;
+}
+
+/* markdown puts a paragraph's own margins here, and they read as a gap between
+   the title and the section it names */
+.live-sections-embed.is-read > .live-sections-embed-body > :first-child {
+  margin-top: 0.25em;
+}
+
+.live-sections-embed.is-read > .live-sections-embed-body > :last-child {
+  margin-bottom: 0;
+}
+
 .live-sections-at {
   margin-right: 0.3em;
   opacity: 0.7;

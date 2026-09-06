@@ -217,6 +217,31 @@ const moved = ['heading', ''].concat(repeated);
 check('writing above them does not renumber', t.buildOccurrenceMap(moved, ANY).get(t.occurrenceKeyFor(3, 2)), 0);
 check('nor the later ones', t.buildOccurrenceMap(moved, ANY).get(t.occurrenceKeyFor(7, 12)), 3);
 
+/* ---- the trigger once it is already HTML, in a preview or a popover ---- */
+check('the trigger ends the text before the link', t.readTriggerSplit('- @', '@'),
+  { cut: 2, quiet: false });
+check('a bang in front is the quiet form', t.readTriggerSplit('- !@', '@'),
+  { cut: 2, quiet: true });
+check('the cut keeps the text that is not the trigger',
+  '- !@'.slice(0, t.readTriggerSplit('- !@', '@').cut), '- ');
+check('a link with nothing in front of it is a plain link', t.readTriggerSplit('- ', '@'), null);
+check('a bang alone is not a trigger', t.readTriggerSplit('!', '@'), null);
+check('text before the trigger is kept', t.readTriggerSplit('note this @', '@').cut, 10);
+check('a trigger alone in its text node', t.readTriggerSplit('@', '@'), { cut: 0, quiet: false });
+check('quiet alone in its text node', t.readTriggerSplit('!@', '@'), { cut: 0, quiet: true });
+check('a trigger of several characters works here too',
+  t.readTriggerSplit('x ++', '++'), { cut: 2, quiet: false });
+
+check('reading mode is wired up at all', source.includes('registerMarkdownPostProcessor'), true);
+/* Same cut as the editor, same reason: a section that renders itself renders
+ * itself again, and reading the file is what starts that. */
+const readGuard = source.indexOf('embedGuard(context.keys');
+check('the reading mode guard is called', readGuard > 0, true);
+check('it runs before the section is read',
+  readGuard < source.indexOf('await app.vault.cachedRead(file)'), true);
+check('the box tells the boxes rendered inside it where they sit',
+  source.indexOf('box.bodyEl.__liveSectionsRead =') < source.indexOf('await renderMarkdownInto('), true);
+
 /* ---- a section that leads back to itself ---- */
 check('the key names note and heading', t.sectionKey('Recipes.md', ['Bread', 'Sourdough']),
   'Recipes.md#bread#sourdough');
