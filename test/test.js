@@ -85,6 +85,28 @@ check('so does plain indentation', t.triggerPlacement('  @[[A#B]]', AT).block, f
 check('and a numbered item', t.triggerPlacement('1. @[[A#B]]', AT).block, false);
 check('a line without a trigger has no placement', t.triggerPlacement('- [[A#B]]', AT), null);
 
+/* ---- a decorative prefix is furniture, not text around the trigger ---- */
+check('an emoji after the bullet still leaves the line to the trigger',
+  t.triggerPlacement('- 👉@[[A#B]]', AT).linktext, 'A#B');
+check('the emoji stays in the prefix',
+  t.triggerPlacement('- 👉@[[A#B]]', AT).prefix, '- 👉');
+check('a space after the emoji is allowed too',
+  t.triggerPlacement('- 👉 @[[A#B]]', AT).prefix, '- 👉 ');
+check('an emoji line is inline, so nothing eats the emoji',
+  t.layoutFor(t.triggerPlacement('- 👉@[[A#B]]', AT)), 'inline');
+check('an emoji needs no bullet in front of it',
+  t.triggerPlacement('👉@[[A#B]]', AT).linktext, 'A#B');
+check('a flag is one emoji', t.triggerPlacement('- 🇧🇷@[[A#B]]', AT).prefix, '- 🇧🇷');
+check('so is an emoji with a skin tone', t.triggerPlacement('- 👉🏽@[[A#B]]', AT).prefix, '- 👉🏽');
+check('quiet reads the same behind an emoji',
+  t.triggerPlacement('- 👉!@[[A#B]]', AT).quiet, true);
+check('a word in front is still text around the trigger',
+  t.triggerPlacement('note @[[A#B]]', AT), null);
+check('an emoji line folds like the bare one',
+  t.canCollapse(['- 👉@[[A#B]]'], 1, t.triggerPlacement('- 👉@[[A#B]]', AT)), true);
+check('an emoji line with a child keeps the native arrow',
+  t.canCollapse(['- 👉@[[A#B]]', '\t- child'], 1, t.triggerPlacement('- 👉@[[A#B]]', AT)), false);
+
 /* ---- the quiet form ---- */
 check('a bang in front asks for quiet', t.triggerPlacement('- !@[[A#B]]', AT).quiet, true);
 check('quiet keeps the link', t.triggerPlacement('- !@[[A#B]]', AT).linktext, 'A#B');

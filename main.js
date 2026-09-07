@@ -125,10 +125,18 @@ function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// An emoji in front of the trigger is furniture, the same way the list marker
+// is: nothing but the trigger follows it, so the line is still the trigger's.
+// Without this the line reads as shared, and a shared line never folds.
+const DECOR = '[\\p{Extended_Pictographic}\\p{Emoji_Modifier}\\p{Regional_Indicator}\\u200d\\ufe0f]';
+
 // A ! in front of the trigger asks for the quiet form: the title steps back and
 // the body sits at the indentation of the line the trigger is on.
 function embedLineRegex(trigger) {
-  return new RegExp(`^(\\s*(?:[-*+]\\s+|\\d+\\.\\s+)?)(!?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]\\s*$`);
+  return new RegExp(
+    `^(\\s*(?:[-*+]\\s+|\\d+\\.\\s+)?(?:${DECOR}+\\s*)?)(!?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]\\s*$`,
+    'u'
+  );
 }
 
 // The same trigger anywhere in a line, so text may sit before and after it.
