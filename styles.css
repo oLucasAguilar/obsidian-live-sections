@@ -279,3 +279,41 @@ body.live-sections-rule-link .live-sections-embed-body::after {
   color: var(--text-error);
   font-size: var(--font-ui-small);
 }
+
+/* CodeMirror scrolls its lines sideways, and so clips whatever hangs left of
+   them. A fold arrow hangs left of its line, and inside a box the lines start
+   at the box's own edge, so every arrow in there was drawn and never seen. The
+   lines wrap, so nothing is left to scroll. */
+.live-sections-embed-body .cm-editor .cm-scroller {
+  overflow-x: visible;
+}
+
+/* Obsidian lights fold arrows on .cm-line:hover with a descendant selector, and
+   the box hangs inside the line of its trigger. So the pointer anywhere in a
+   box counted as hovering the trigger line, and lit every arrow in the box at
+   once. Inside a box the arrows go dark, and each comes back only for the line
+   it sits on directly. */
+.markdown-source-view.mod-cm6
+  .live-sections-embed-body
+  .cm-line
+  .cm-fold-indicator:not(.is-collapsed)
+  .collapse-indicator {
+  opacity: 0;
+}
+
+.markdown-source-view.mod-cm6
+  .live-sections-embed-body
+  .cm-line:hover:not(:has(> .live-sections-embed > .live-sections-embed-body:hover))
+  > .cm-fold-indicator
+  .collapse-indicator {
+  opacity: 1;
+}
+
+/* The trigger line in the note itself: over the body its arrow stays dark,
+   over the title it still lights. A collapsed arrow is always shown. */
+.markdown-source-view.mod-cm6
+  .cm-line:has(> .live-sections-embed > .live-sections-embed-body:hover)
+  > .cm-fold-indicator:not(.is-collapsed)
+  .collapse-indicator {
+  opacity: 0;
+}

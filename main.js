@@ -2,7 +2,8 @@
 
 const obsidian = require('obsidian');
 const { Decoration, EditorView, ViewPlugin, WidgetType, keymap } = require('@codemirror/view');
-const { Prec, StateEffect, StateField } = require('@codemirror/state');
+const { EditorSelection, Prec, StateEffect, StateField } = require('@codemirror/state');
+const { foldedRanges, foldEffect } = require('@codemirror/language');
 
 function splitLinkText(raw) {
   let alias = null;
@@ -171,6 +172,10 @@ function triggerPlacement(lineText, embedRegex) {
 function indentWidth(text) {
   const lead = (text.match(/^[ \t]*/) || [''])[0];
   return lead.replace(/\t/g, '    ').length;
+}
+
+function leadingWhitespace(text) {
+  return (String(text).match(/^[ \t]*/) || [''])[0].length;
 }
 
 function hasIndentedChild(lineTexts, lineNumber) {
@@ -376,6 +381,65 @@ function getSectionEditorClass(app) {
   return sectionEditorClass;
 }
 
+/* Where the caret is across the screen. Moving up and down, CodeMirror aims at a
+ * pixel offset from its own content edge and keeps it as goalColumn, which is
+ * what holds the caret on one column through short lines. Made absolute, the
+ * same number means the same spot in any editor, the box's or the note's.
+ * Counting characters instead put the caret elsewhere as soon as the two lines
+ * had different indentation in front of the text. */
+function caretX(view) {
+  const cursor = view.state.selection.main;
+  const left = view.contentDOM.getBoundingClientRect().left;
+  if (cursor.goalColumn != null) return left + cursor.goalColumn;
+  const coords = view.coordsAtPos(cursor.head, cursor.assoc || 1);
+  return coords ? coords.left : left;
+}
+
+/* A caret on the given line at that spot across the screen, carrying the spot
+ * on as the goal for the next step. Coming down it lands on the line's first
+ * visual row, going up on its last, which is where the eye arrives. */
+function cursorAtX(view, lineNumber, x, dir) {
+  const line = view.state.doc.line(lineNumber);
+  const left = view.contentDOM.getBoundingClientRect().left;
+  let pos = line.from;
+  if (x != null) {
+    const edge = view.coordsAtPos(dir === -1 ? line.to : line.from, dir === -1 ? -1 : 1);
+    const hit = edge ? view.posAtCoords({ x, y: (edge.top + edge.bottom) / 2 }, false) : null;
+    if (hit != null) pos = Math.min(Math.max(hit, line.from), line.to);
+  }
+  return EditorSelection.cursor(pos, dir === -1 ? -1 : 1, undefined, x == null ? undefined : x - left);
+}
+
+/* A trigger line is a box until the caret lands on it, and the spot across the
+ * screen was matched against the box, where the whole title is one widget and
+ * any x falls on its edge, the start of the line. Once the line has gone raw
+ * the same x is matched again, against the text it shows now. And again after
+ * that: the caret landing next to the link is what makes Obsidian show its
+ * brackets, which pushes the text right, so one pass left it short by the
+ * width of the brackets. It repeats until the caret stops moving. The timeout
+ * lets the focus news that makes the line raw go out first. */
+function settleOnTrigger(view, lineNumber, x, dir, anyRegex, rounds) {
+  if (x == null || lineNumber < 1 || lineNumber > view.state.doc.lines) return;
+  if (!triggersInLine(view.state.doc.line(lineNumber).text, anyRegex).length) return;
+  const left = rounds === undefined ? 3 : rounds;
+  if (left <= 0) return;
+  const doc = view.state.doc;
+  const landed = view.state.selection.main.head;
+  window.setTimeout(() => window.requestAnimationFrame(() => {
+    try {
+      // the caret has moved on, or the text changed under it: not ours to touch
+      if (!view.dom.isConnected || view.state.doc !== doc) return;
+      if (view.state.selection.main.head !== landed || !view.state.selection.main.empty) return;
+      const next = cursorAtX(view, lineNumber, x, dir);
+      if (next.head === landed) return;
+      view.dispatch({ selection: EditorSelection.create([next]) });
+      settleOnTrigger(view, lineNumber, x, dir, anyRegex, left - 1);
+    } catch (err) {
+      console.error('[live-sections] could not settle the caret on the trigger', err);
+    }
+  }), 0);
+}
+
 class SectionEditorHost {
   constructor(app, containerEl, options) {
     this.app = app;
@@ -437,12 +501,12 @@ class SectionEditorHost {
     return !!(cm && cm.hasFocus);
   }
 
-  focusEdge(dir, column) {
+  focusEdge(dir, x) {
     const cm = this.cmView();
     if (!cm) return false;
-    const line = cm.state.doc.line(dir === 1 ? 1 : cm.state.doc.lines);
+    const number = dir === 1 ? 1 : cm.state.doc.lines;
     cm.dispatch({
-      selection: { anchor: Math.min(line.from + column, line.to) },
+      selection: EditorSelection.create([cursorAtX(cm, number, x, dir)]),
       scrollIntoView: true,
     });
     cm.focus();
@@ -609,12 +673,14 @@ class SectionMount {
     }
   }
 
-  revealTriggerLine(column) {
+  revealTriggerLine(x) {
     if (!this.view) return;
     try {
       const pos = this.view.posAtDOM(this.el);
       const line = this.view.state.doc.lineAt(pos);
-      const anchor = column ? Math.min(line.from + column, line.to) : line.from;
+      // its first row: the line is a box until the caret lands, and the box's
+      // last row is the bottom of its body, nowhere near the trigger text
+      const selection = EditorSelection.create([cursorAtX(this.view, line.number, x, 1)]);
       /* The focus effect rides along instead of waiting for the focus event.
        * Sending the caret here and letting the event catch up meant the rebuild
        * ran while the editor still counted as unfocused, so the line it landed
@@ -622,11 +688,12 @@ class SectionMount {
       this.plugin.movingCaret = true;
       try {
         this.view.dispatch({
-          selection: { anchor },
+          selection,
           scrollIntoView: true,
           effects: focusEffect.of(true),
         });
         this.view.focus();
+        settleOnTrigger(this.view, line.number, x, 1, this.plugin.embedAny);
       } finally {
         this.plugin.movingCaret = false;
       }
@@ -731,7 +798,7 @@ class SectionMount {
     }
   }
 
-  exitTo(dir, column, skipBlock) {
+  exitTo(dir, x, skipBlock) {
     const line = this.triggerLine();
     if (!line) return;
     const doc = this.view.state.doc;
@@ -747,21 +814,21 @@ class SectionMount {
        * of lines here means the box around this one has to carry the step on,
        * from its own trigger line, or the caret has nowhere to land and stays. */
       if (this.parent) {
-        this.parent.exitTo(dir, column, skipBlock);
+        this.parent.exitTo(dir, x, skipBlock);
         return;
       }
       this.revealTriggerLine();
       return;
     }
-    const target = doc.line(targetNumber);
     this.plugin.movingCaret = true;
     try {
       this.view.dispatch({
-        selection: { anchor: Math.min(target.from + column, target.to) },
+        selection: EditorSelection.create([cursorAtX(this.view, targetNumber, x, dir)]),
         scrollIntoView: true,
         effects: focusEffect.of(true),
       });
       this.view.focus();
+      settleOnTrigger(this.view, targetNumber, x, dir, this.plugin.embedAny);
     } finally {
       this.plugin.movingCaret = false;
     }
@@ -792,12 +859,12 @@ class SectionMount {
       const cursor = cm.state.selection.main;
       if (!cursor.empty) return;
       const line = cm.state.doc.lineAt(cursor.head);
-      const column = cursor.head - line.from;
+      const x = caretX(cm);
 
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        this.exitTo(dir, column, true);
+        this.exitTo(dir, x, true);
         return;
       }
 
@@ -811,10 +878,10 @@ class SectionMount {
        * keymap that would otherwise have stepped in, so it answers for it. */
       if (dir === 1 && triggersInLine(line.text, this.plugin.embedAny).length) {
         const child = this.childMountOn(cm, line.number);
-        if (child && child.focusEdge(1, column)) return;
+        if (child && child.focusEdge(1, x)) return;
       }
-      if (dir === -1) this.revealTriggerLine(column);
-      else this.exitTo(1, column, false);
+      if (dir === -1) this.revealTriggerLine(x);
+      else this.exitTo(1, x, false);
     }, true);
   }
 
@@ -833,17 +900,19 @@ class SectionMount {
    * not: a trigger line has text of its own to show and edit. Coming up, the
    * last visual line is the last line of the last box inside it, however deep,
    * so that one keeps descending. */
-  focusEdge(dir, column) {
+  focusEdge(dir, x) {
     if (this.destroyed || !this.host || this.collapsed) return false;
     const cm = this.host.cmView();
     if (cm && dir === -1) {
       const lineNumber = cm.state.doc.lines;
       if (triggersInLine(cm.state.doc.line(lineNumber).text, this.plugin.embedAny).length) {
         const child = this.childMountOn(cm, lineNumber);
-        if (child && child.focusEdge(dir, column)) return true;
+        if (child && child.focusEdge(dir, x)) return true;
       }
     }
-    return this.host.focusEdge(dir, column);
+    if (!this.host.focusEdge(dir, x)) return false;
+    if (cm) settleOnTrigger(cm, dir === 1 ? 1 : cm.state.doc.lines, x, dir, this.plugin.embedAny);
+    return true;
   }
 
   renderError(message) {
@@ -924,6 +993,8 @@ class SectionMount {
     this.applyCollapsed();
     this.watchSize();
     this.claimPendingCaret();
+    this.restoreFolds(value);
+    window.requestAnimationFrame(() => this.plugin.claimPendingEnter());
     window.requestAnimationFrame(() => this.settle());
   }
 
@@ -1004,9 +1075,44 @@ class SectionMount {
     window.requestAnimationFrame(() => this.restoreCaret(pending));
   }
 
+  /* The same swap takes the folds with it: they live in the editor, and the
+   * editor built for the other widget starts with everything open. So the
+   * caret stepping onto the trigger line unfolded every bullet in the box. */
+  rememberFolds() {
+    const cm = this.host && this.host.cmView();
+    if (!cm) return;
+    const ranges = [];
+    foldedRanges(cm.state).between(0, cm.state.doc.length, (from, to) => {
+      ranges.push({ from, to });
+    });
+    if (ranges.length) this.plugin.savedFolds.set(this.collapseKey, { value: this.host.getValue(), ranges });
+    else this.plugin.savedFolds.delete(this.collapseKey);
+  }
+
+  // Offsets only mean something on the text they were taken from, so a section
+  // that changed since then comes back open.
+  restoreFolds(value) {
+    const saved = this.plugin.savedFolds.get(this.collapseKey);
+    if (!saved || saved.value !== value) return;
+    window.requestAnimationFrame(() => {
+      const cm = this.host && this.host.cmView();
+      if (!cm || this.destroyed || cm.state.doc.toString() !== saved.value) return;
+      try {
+        cm.dispatch({ effects: saved.ranges.map((range) => foldEffect.of(range)) });
+      } catch (err) {
+        console.error('[live-sections] could not restore the folds', err);
+      }
+    });
+  }
+
   destroy() {
     this.destroyed = true;
     this.rememberCaret();
+    this.rememberFolds();
+    /* A box torn down with the caret inside never fires focusout, so Obsidian
+     * kept this box's editor as the active one, dead. Every editor command then
+     * ran against it and did nothing, until the note was opened again. */
+    this.releaseEditorContext();
     if (this.bufferObserver) this.bufferObserver.disconnect();
     if (this.sizeObserver) this.sizeObserver.disconnect();
     if (this.modifyRef) this.app.vault.offref(this.modifyRef);
@@ -1250,15 +1356,15 @@ function makeCursorKeymap(plugin) {
     const current = state.doc.lineAt(cursor.head);
     const lineTexts = [];
     for (let n = 1; n <= state.doc.lines; n++) lineTexts.push(state.doc.line(n).text);
-    return { state, cursor, current, lineTexts, column: cursor.head - current.from };
+    return { state, cursor, current, lineTexts, x: caretX(view) };
   };
 
-  const moveTo = (view, lineNumber, column) => {
-    const line = view.state.doc.line(lineNumber);
+  const moveTo = (view, lineNumber, x, dir) => {
     view.dispatch({
-      selection: { anchor: Math.min(line.from + column, line.to) },
+      selection: EditorSelection.create([cursorAtX(view, lineNumber, x, dir)]),
       scrollIntoView: true,
     });
+    settleOnTrigger(view, lineNumber, x, dir, plugin.embedAny);
     return true;
   };
 
@@ -1282,23 +1388,37 @@ function makeCursorKeymap(plugin) {
     const targetNumber = stepTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine);
     if (targetNumber === null) return false;
 
-    if (dir === 1) return moveTo(view, targetNumber, ctx.column);
+    if (dir === 1) return moveTo(view, targetNumber, ctx.x, dir);
 
     const mount = mountAtLine(view, targetNumber);
-    if (mount && mount.focusEdge(dir, ctx.column)) return true;
-    return moveTo(view, targetNumber, ctx.column);
+    if (mount && mount.focusEdge(dir, ctx.x)) return true;
+    return moveTo(view, targetNumber, ctx.x, dir);
   };
 
   const stepFromTriggerIntoContent = (view, ctx) => {
     const triggerNumber = ctx.current.number;
     const doc = view.state.doc;
     const parkNumber = Math.min(triggerNumber + 1, doc.lines);
-    const park = doc.line(parkNumber);
-    view.dispatch({ selection: { anchor: park.from }, scrollIntoView: true });
-    window.requestAnimationFrame(() => {
-      const mount = mountAtLine(view, triggerNumber);
-      if (mount) mount.focusEdge(1, ctx.column);
+    /* Parked at the same spot across the screen, not at the start of the line:
+     * when the box does not take the caret, a collapsed one for instance, the
+     * park is where it stays. */
+    view.dispatch({
+      selection: EditorSelection.create([cursorAtX(view, parkNumber, ctx.x, 1)]),
+      scrollIntoView: true,
     });
+    settleOnTrigger(view, parkNumber, ctx.x, 1, plugin.embedAny);
+    // a collapsed box has nothing to step into, so the step ends on the next line
+    const current = mountAtLine(view, triggerNumber);
+    if (current && current.collapsed) return true;
+    /* Moving off the line is what turns the raw trigger back into a box, so
+     * the box being entered is a new one, still reading its file, with no
+     * editor to take the caret. Looking for it a frame later found it empty
+     * and the caret stayed parked at the start of the next line. The request
+     * waits instead, and the box answers it once it has an editor. */
+    plugin.pendingEnter = {
+      view, line: triggerNumber, x: ctx.x, park: view.state.selection.main.head, at: Date.now(),
+    };
+    window.requestAnimationFrame(() => plugin.claimPendingEnter());
     return true;
   };
 
@@ -1307,7 +1427,7 @@ function makeCursorKeymap(plugin) {
     if (!ctx) return false;
     const targetNumber = skipTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine);
     if (targetNumber === null) return false;
-    return moveTo(view, targetNumber, ctx.column);
+    return moveTo(view, targetNumber, ctx.x, dir);
   };
 
   return Prec.highest(
@@ -1425,11 +1545,13 @@ function buildInlineDecorations(view, plugin) {
           const key = collapseKeyFor(
             sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(line.number, hits[0].from))
           );
+          // after the indentation, where Obsidian puts its own arrow: at the
+          // start of the line, an indented trigger had its arrow a level out
           ranges.push(
             Decoration.widget({
               widget: new FoldWidget(plugin, key, plugin.collapsed.has(key)),
               side: -1,
-            }).range(line.from)
+            }).range(line.from + leadingWhitespace(line.text))
           );
         }
 
@@ -1642,6 +1764,8 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.buildStack = [];
     this.pendingCaret = null;
     this.movingCaret = false;
+    this.savedFolds = new Map();
+    this.pendingEnter = null;
     this.setTrigger();
     this.applyRuleColor();
 
@@ -1839,16 +1963,16 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.refreshQueued = true;
     window.setTimeout(() => {
       this.refreshQueued = false;
-      this.app.workspace.iterateAllLeaves((leaf) => {
-        const view = leaf.view;
-        const cm = view && view.editor && view.editor.cm;
-        if (!cm) return;
+      /* The editors inside boxes too: a box inside a box hangs its fold arrow
+       * on a line of the box around it, and that editor was never told, so the
+       * arrow showed the old state until the caret moved there. */
+      for (const cm of this.allEditorViews()) {
         try {
           cm.dispatch({ effects: refreshEffect.of(null) });
         } catch (err) {
           console.error('[live-sections] could not refresh an editor', err);
         }
-      });
+      }
     }, 0);
   }
 
@@ -1871,6 +1995,27 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.applyRuleColor();
     await this.persist();
     this.refreshEditors();
+  }
+
+  claimPendingEnter() {
+    const pending = this.pendingEnter;
+    if (!pending) return;
+    // gone stale, or the caret was moved from where it was parked: nobody is
+    // waiting for this any more
+    const view = pending.view;
+    if (Date.now() - pending.at > 1000 || !view.dom.isConnected ||
+        view.state.selection.main.head !== pending.park) {
+      this.pendingEnter = null;
+      return;
+    }
+    for (const mount of this.mounts) {
+      if (mount.view !== view || mount.destroyed || !mount.host) continue;
+      const line = mount.triggerLine();
+      if (!line || line.number !== pending.line) continue;
+      this.pendingEnter = null;
+      mount.focusEdge(1, pending.x);
+      return;
+    }
   }
 
   toggleCollapsedKey(key) {
@@ -1910,13 +2055,17 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     for (const view of this.allEditorViews()) syncFocus(view);
   }
 
+  // The innermost: a box inside a box contains the caret too, and the one
+  // built first, the outer, used to answer for both.
   focusedMount() {
     const active = document.activeElement;
     if (!active) return null;
+    let found = null;
     for (const mount of this.mounts) {
-      if (!mount.destroyed && mount.el.contains(active)) return mount;
+      if (mount.destroyed || !mount.el.contains(active)) continue;
+      if (!found || mount.depth > found.depth) found = mount;
     }
-    return null;
+    return found;
   }
 
   foldTarget(editor, ctx) {
@@ -1924,6 +2073,15 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     if (focused) {
       const inner = focused.host && focused.host.obsidianEditor();
       const owner = focused.host && focused.host.owner();
+      /* The caret on a trigger line inside the box is the same case as on one
+       * in the note: that box folds. Without this the key went to the native
+       * fold, which found no children under the line and did nothing. */
+      const cm = focused.host && focused.host.cmView();
+      if (cm) {
+        const lineNumber = cm.state.doc.lineAt(cm.state.selection.main.head).number;
+        const child = focused.childMountOn(cm, lineNumber);
+        if (child && child.collapsible) return { mount: child, editor: inner || editor, ctx: owner || ctx };
+      }
       return { mount: null, editor: inner || editor, ctx: owner || ctx };
     }
 
@@ -2080,6 +2238,7 @@ module.exports.__test = {
   breadcrumbParts,
   buildOccurrenceMap,
   hasIndentedChild,
+  leadingWhitespace,
   canCollapse,
   layoutFor,
   embedAnyRegex,

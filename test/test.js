@@ -20,13 +20,14 @@ const fakeObsidian = {
 // read at module load, unlike the rest, which only runs inside a real editor
 Fake.updateListener = { of: () => ({}) };
 const fakeView = { Decoration: Fake, EditorView: Fake, ViewPlugin: Fake, WidgetType: Fake, keymap: Fake };
-const fakeState = { Prec: Fake, StateEffect: Fake, StateField: Fake };
+const fakeState = { EditorSelection: Fake, Prec: Fake, StateEffect: Fake, StateField: Fake };
 
 const origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === 'obsidian') return fakeObsidian;
   if (request === '@codemirror/view') return fakeView;
   if (request === '@codemirror/state') return fakeState;
+  if (request === '@codemirror/language') return { foldedRanges: () => ({ between() {} }), foldEffect: Fake };
   return origLoad.apply(this, arguments);
 };
 
@@ -292,6 +293,11 @@ check('the guard runs before the nested editor exists',
   guardCall < source.indexOf('new SectionEditorHost('), true);
 check('the box that is building is told to the boxes it builds',
   /buildStack\.push\([\s\S]{0,400}?new SectionEditorHost\([\s\S]{0,400}?buildStack\.pop\(\)/.test(source), true);
+
+// the fold arrow of an indented trigger sits after the indentation, by the marker
+check('arrow of a top level trigger sits at the line start', t.leadingWhitespace('- @[[Recipes#Bread]]'), 0);
+check('arrow of a tabbed trigger sits after the tab', t.leadingWhitespace('\t- @[[Recipes#Bread]]'), 1);
+check('arrow of a space indented trigger sits after the spaces', t.leadingWhitespace('    - @[[Recipes#Bread]]'), 4);
 
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);
