@@ -523,6 +523,15 @@ class SectionEditorHost {
   }
 }
 
+function releaseActiveEditor(workspace, owner) {
+  try {
+    if (typeof workspace.unsetActiveEditor === 'function') workspace.unsetActiveEditor(owner);
+    else if (workspace._activeEditor === owner) workspace._activeEditor = null;
+  } catch (err) {
+    console.error('[live-sections] could not release the editor context', err);
+  }
+}
+
 function mountFromNode(node) {
   for (let el = node; el; el = el.parentElement) {
     if (el.__liveSectionsMount) return el.__liveSectionsMount;
@@ -711,15 +720,12 @@ class SectionMount {
     }
   }
 
+  /* The setter of activeEditor ignores a MarkdownView on purpose, so handing
+   * the note back by assignment did nothing and the box stayed active, dead or
+   * alive. Unsetting is what makes the getter fall back to the note. */
   releaseEditorContext() {
-    const workspace = this.app.workspace;
     const owner = this.host && this.host.owner();
-    if (!owner || workspace.activeEditor !== owner) return;
-    try {
-      workspace.activeEditor = workspace.getActiveViewOfType(obsidian.MarkdownView) || null;
-    } catch (err) {
-      console.error('[live-sections] could not release the editor context', err);
-    }
+    if (owner) releaseActiveEditor(this.app.workspace, owner);
   }
 
   markerEl() {
@@ -2053,6 +2059,17 @@ class LiveSectionsPlugin extends obsidian.Plugin {
 
   syncAllFocus() {
     for (const view of this.allEditorViews()) syncFocus(view);
+    this.dropDeadActiveEditor();
+  }
+
+  /* A box editor left as the active one after its box is gone, by whatever
+   * path skipped the release. Every editor command then runs against it, finds
+   * nothing, and the note looks deaf until it is opened again. */
+  dropDeadActiveEditor() {
+    const workspace = this.app.workspace;
+    const active = workspace._activeEditor;
+    const cm = active && active.editor && active.editor.cm;
+    if (cm && !cm.dom.isConnected) releaseActiveEditor(workspace, active);
   }
 
   // The innermost: a box inside a box contains the caret too, and the one
