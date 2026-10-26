@@ -1,78 +1,45 @@
 # Live Sections
 
-Write `@[[Note#Heading]]` on a line and that section shows up there, editable, kept in sync with the note it lives in. In Live Preview, while you edit.
+**Another note's section, editable right where you are.**
 
-Obsidian's own `![[Note#Heading]]` renders the section read only, in embed styling. This keeps the text as text: you type in it, and the source file changes.
+Write `@[[Note#Heading]]` on a line. The section opens under it, in Live Preview, and what you type there goes back to the source note.
 
-![](docs/editing.gif)
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/editing-dark.gif"><img alt="Typing @[[Recipes#Bread]] opens the Bread section; text typed inside it shows up in the Recipes note on the right" src="docs/editing-light.gif"></picture>
 
-## Nested anchors
-
-`@[[Recipes#Bread#Sourdough]]` walks the heading tree. A `Sourdough` under `Bread` is not the same heading as a top level `Sourdough`, and the other plugins that do this cut the link at the first `#` and cannot tell them apart.
-
-## Text on the line
-
-`before @[[Recipes#Bread]] after` renders, and so do two triggers on one line. The words stay on their line with the section title in place of the link, and the section opens under the whole line. A section is taller than a line, so it cannot sit in the middle of a sentence.
-
-A line the trigger has to itself keeps its old shape, block at the start of a line and inline after a list marker, with the fold arrow. A shared line has no arrow, since that arrow belongs to the line, not to the box.
-
-## The quiet form
-
-`!@[[Recipes#Bread]]` renders the same section with the title out of the way: faint, no link colour, lit up again when the pointer is on it. Clicking still works, so the link stays editable.
-
-The body drops its guide line and lines up with the line the trigger is on, instead of stepping one level in. Written on a bullet, the bullets that come out land on the same column as the bullet you wrote it on.
-
-How far left the body travels is `--live-sections-quiet-pull`, half a list indent by default. A theme with its own list metrics may need another number, and the layout report prints the two columns that decide it.
-
-## Where a section ends
-
-A short rule under the last row of every box, in the colour of a link, saying where the section stops and the note goes on. It sits on the text column of the line it closes and shortens a step for each box it sits inside, so nesting reads at a glance.
-
-It can be a faint grey instead, in the settings.
-
-## Collapsing
-
-Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.
-
-![](docs/collapsing.gif)
-
-## Reading and hover previews
-
-Outside the editor there is no editor: a hover preview and reading view render the section instead, read only, with the same title, the same faint quiet form and the same closing rule. Before this, a note that used the trigger read as `@[[Note#Heading]]` in every preview of it, which is the one place the raw link says least.
-
-Read only on purpose. A popover closes as soon as the pointer leaves it, and an editor that goes away like that takes what you typed with it.
-
-Nesting, loops and the depth limit work there as they do in the editor. Can be turned off in the settings.
-
-## Loops
-
-A section that renders itself, straight (`@[[Recipes#Bread]]` written inside `Bread`) or around a ring of notes, would build the same box forever. The box that would repeat one already open around it says so instead of rendering, and boxes stop stacking at the nesting limit. Both cuts happen before the inner editor is built, so nothing hangs.
-
-## Keyboard
-
-| Key | In the note | Inside a section |
-| --- | --- | --- |
-| Arrow up, arrow down | Steps into the section | Moves through it, and out at the edges |
-| Ctrl+arrow | Jumps the whole section | Leaves it |
-| Escape | | Back to the `@` line, to edit the link |
-| Fold shortcut | Collapses the section on the cursor line | Folds inside the section |
-
-Clicking the title opens the note. Clicking the `@` puts the cursor back on the raw line.
+Obsidian's own `![[Note#Heading]]` is read only. This one is a real editor.
 
 ## Install
 
-Not in the community store, and it will not be: it reaches into undocumented Obsidian internals to get a real editor inside the box, and wraps a core command. That is fine for a plugin you install yourself, and not fine for the store.
+Not in the community store: it relies on undocumented Obsidian internals.
 
-Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/live-sections/`, or point [BRAT](https://github.com/TfTHacker/obsidian42-brat) at this repo.
+Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/live-sections/`, or add this repo to [BRAT](https://github.com/TfTHacker/obsidian42-brat).
 
-## Settings
+## In practice
 
-The trigger character, the colour of the closing rule, whether sections render while reading, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
+**Nested headings**
 
-## Known gaps
+`@[[Recipes#Bread#Sourdough]]` picks the Sourdough under Bread, not another Sourdough.
 
-- Long or deeply nested content inside a bullet renders with too much space at the start of each line.
+**Collapse it**
 
-## Tests
+Folds like a list item, with your own fold shortcut.
 
-`node test/test.js` covers the parsing: nested anchors, where the box goes, the round trip that writes your edit back, and the keyboard steps. Obsidian is stubbed, so no vault is needed.
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/collapsing-dark.gif"><img alt="The section folds and unfolds" src="docs/collapsing-light.gif"></picture>
+
+**Quiet form**
+
+`!@[[Recipes#Bread]]` keeps the title faint, so the section reads as part of your note.
+
+**Previews and reading view**
+
+They show the section too, read only.
+
+**Keyboard**
+
+Arrow keys step in and out of the section. Escape goes back to the `@` line.
+
+Settings, loops, the full keyboard table and the tests: [docs/usage.md](docs/usage.md).
+
+## Limits
+
+- Long or deeply nested content inside a bullet gets extra space at the start of each line.

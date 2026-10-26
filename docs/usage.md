@@ -1,0 +1,68 @@
+# Live Sections: details
+
+The README covers what you need to start. This is the rest, as it was written before the README was cut down.
+
+## Nested anchors
+
+`@[[Recipes#Bread#Sourdough]]` walks the heading tree. A `Sourdough` under `Bread` is not the same heading as a top level `Sourdough`, and the other plugins that do this cut the link at the first `#` and cannot tell them apart.
+
+## Text on the line
+
+`before @[[Recipes#Bread]] after` renders, and so do two triggers on one line. The words stay on their line with the section title in place of the link, and the section opens under the whole line. A section is taller than a line, so it cannot sit in the middle of a sentence.
+
+A line the trigger has to itself keeps its old shape, block at the start of a line and inline after a list marker, with the fold arrow. A shared line has no arrow, since that arrow belongs to the line, not to the box.
+
+## The quiet form
+
+`!@[[Recipes#Bread]]` renders the same section with the title out of the way: faint, no link colour, lit up again when the pointer is on it. Clicking still works, so the link stays editable.
+
+The body drops its guide line and lines up with the line the trigger is on, instead of stepping one level in. Written on a bullet, the bullets that come out land on the same column as the bullet you wrote it on.
+
+How far left the body travels is `--live-sections-quiet-pull`, half a list indent by default. A theme with its own list metrics may need another number, and the layout report prints the two columns that decide it.
+
+## Where a section ends
+
+A short rule under the last row of every box, in the colour of a link, saying where the section stops and the note goes on. It sits on the text column of the line it closes and shortens a step for each box it sits inside, so nesting reads at a glance.
+
+It can be a faint grey instead, in the settings.
+
+## Collapsing
+
+Sections collapse like a list item, with the arrow left of the bullet and your own fold shortcut. The plugin does not invent a key, it wraps `editor:toggle-fold`, so it follows whatever you have bound.
+
+
+## Reading and hover previews
+
+Outside the editor there is no editor: a hover preview and reading view render the section instead, read only, with the same title, the same faint quiet form and the same closing rule. Before this, a note that used the trigger read as `@[[Note#Heading]]` in every preview of it, which is the one place the raw link says least.
+
+Read only on purpose. A popover closes as soon as the pointer leaves it, and an editor that goes away like that takes what you typed with it.
+
+Nesting, loops and the depth limit work there as they do in the editor. Can be turned off in the settings.
+
+## Loops
+
+A section that renders itself, straight (`@[[Recipes#Bread]]` written inside `Bread`) or around a ring of notes, would build the same box forever. The box that would repeat one already open around it says so instead of rendering, and boxes stop stacking at the nesting limit. Both cuts happen before the inner editor is built, so nothing hangs.
+
+## Keyboard
+
+| Key | In the note | Inside a section |
+| --- | --- | --- |
+| Arrow up, arrow down | Steps into the section | Moves through it, and out at the edges |
+| Ctrl+arrow | Jumps the whole section | Leaves it |
+| Escape | | Back to the `@` line, to edit the link |
+| Fold shortcut | Collapses the section on the cursor line | Folds inside the section |
+
+Clicking the title opens the note. Clicking the `@` puts the cursor back on the raw line.
+
+
+## Settings
+
+The trigger character, the colour of the closing rule, whether sections render while reading, whether arrow keys leave a section at its edges, how many boxes may nest inside one another, and how long to wait after typing before writing to the source file.
+
+## Known gaps
+
+- Long or deeply nested content inside a bullet renders with too much space at the start of each line.
+
+## Tests
+
+`node test/test.js` covers the parsing: nested anchors, where the box goes, the round trip that writes your edit back, and the keyboard steps. Obsidian is stubbed, so no vault is needed.
