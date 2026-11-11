@@ -4,8 +4,9 @@
 #
 #   dev/release.sh           simulate (default): run every check, print what would be published
 #   dev/release.sh --apply   publish
-#   dev/release.sh check     warn when the code changed since the last release but the version did not
+#   dev/release.sh check     note that there are unreleased changes (the pre-push reminder)
 #
+# Release when a change is finished, not on every commit.
 # Its only write is `gh release create`. It never commits, pushes a branch, moves or deletes
 # a tag, or edits an existing release.
 set -euo pipefail
@@ -22,8 +23,9 @@ changed_since_last() { [ -z "$last" ] || ! git diff --quiet "$last" HEAD -- "${a
 
 if [ "$mode" = check ]; then
   if [ -n "$last" ] && [ "$version" = "$last" ] && changed_since_last; then
-    echo "⚠️  $(basename "$PWD"): ${assets[*]} changed since release $last, but manifest.json is still $version."
-    echo "   BRAT users stay on $last. Bump the version, push, then run dev/release.sh"
+    n=$(git rev-list --count "$last..HEAD" -- "${assets[@]}")
+    echo "ℹ️  $(basename "$PWD"): $n commit(s) since release $last, not released yet."
+    echo "   When it is finished: bump manifest.json, push, then dev/release.sh --apply"
   fi
   exit 0
 fi
