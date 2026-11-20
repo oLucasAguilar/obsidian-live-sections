@@ -234,8 +234,23 @@ function buildOccurrenceMap(lineTexts, anyRegex) {
   return byHit;
 }
 
-function stepTargetLine(lineTexts, currentNumber, dir, embedRegex) {
-  const targetNumber = currentNumber + dir;
+/* The line an arrow press lands on is the next one on screen, not the next in
+ * the file: a folded bullet hides its children, and stepping down from it goes
+ * past them. Ignoring that let the native step take the caret onto a trigger
+ * line under a folded bullet, matched against the box, so it landed at the
+ * start of the line instead of under the caret. Folds come as line spans: the
+ * lines after `fromLine`, through `toLine`, are hidden. */
+function stepTargetLine(lineTexts, currentNumber, dir, embedRegex, folds) {
+  let targetNumber = currentNumber + dir;
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const fold of folds || []) {
+      if (targetNumber > fold.fromLine && targetNumber <= fold.toLine) {
+        targetNumber = dir === 1 ? fold.toLine + 1 : fold.fromLine;
+        moved = true;
+      }
+    }
+  }
   if (targetNumber < 1 || targetNumber > lineTexts.length) return null;
   return embedRegex.test(lineTexts[targetNumber - 1]) ? targetNumber : null;
 }
@@ -395,10 +410,42 @@ function caretX(view) {
   return coords ? coords.left : left;
 }
 
+/* Where a line's text starts, the way Obsidian reads it for up and down: past
+ * the bullet (and checkbox) on a list item, past the quote marks and indent on
+ * anything else. The regex is Obsidian's own (`At` in app.js). */
+const LINE_PREFIX = /^([>\s]*)(([*+-] |(\d+)([.)] ))(?:\[(.)\] )?)?/;
+function textStart(line) {
+  const m = LINE_PREFIX.exec(line.text);
+  const isItem = !!m[2];
+  return { pos: line.from + (isItem ? m[0] : m[1]).length, isItem };
+}
+
+/* Obsidian moves up and down keeping the caret's distance from where the text
+ * starts, not from the editor's edge, whenever either line is a list item
+ * (VZ in app.js). From the end of a bullet up to a heading the goal shifts
+ * left by the bullet's indent, and coming back down shifts it right again.
+ * The trigger line is stepped onto by this plugin, not by Obsidian, so it has
+ * to shift the same way, or the caret came back short by the indent. The
+ * target is measured each time it is asked for, because the trigger line
+ * turns from box to raw text under the caret. */
+function aimFrom(view, fromLine, x) {
+  const from = textStart(fromLine);
+  const fromCoords = view.coordsAtPos(from.pos, 1);
+  if (!fromCoords) return x;
+  const offset = x - fromCoords.left;
+  return (target, lineNumber) => {
+    const to = textStart(target.state.doc.line(lineNumber));
+    if (!from.isItem && !to.isItem) return x;
+    const toCoords = target.coordsAtPos(to.pos, 1);
+    return toCoords ? toCoords.left + offset : x;
+  };
+}
+
 /* A caret on the given line at that spot across the screen, carrying the spot
  * on as the goal for the next step. Coming down it lands on the line's first
  * visual row, going up on its last, which is where the eye arrives. */
-function cursorAtX(view, lineNumber, x, dir) {
+function cursorAtX(view, lineNumber, aim, dir) {
+  const x = typeof aim === 'function' ? aim(view, lineNumber) : aim;
   const line = view.state.doc.line(lineNumber);
   const left = view.contentDOM.getBoundingClientRect().left;
   let pos = line.from;
@@ -1362,7 +1409,11 @@ function makeCursorKeymap(plugin) {
     const current = state.doc.lineAt(cursor.head);
     const lineTexts = [];
     for (let n = 1; n <= state.doc.lines; n++) lineTexts.push(state.doc.line(n).text);
-    return { state, cursor, current, lineTexts, x: caretX(view) };
+    const folds = [];
+    foldedRanges(state).between(0, state.doc.length, (from, to) => {
+      folds.push({ fromLine: state.doc.lineAt(from).number, toLine: state.doc.lineAt(to).number });
+    });
+    return { state, cursor, current, lineTexts, folds, x: caretX(view) };
   };
 
   const moveTo = (view, lineNumber, x, dir) => {
@@ -1391,14 +1442,15 @@ function makeCursorKeymap(plugin) {
       return stepFromTriggerIntoContent(view, ctx);
     }
 
-    const targetNumber = stepTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine);
+    const targetNumber = stepTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine, ctx.folds);
     if (targetNumber === null) return false;
 
-    if (dir === 1) return moveTo(view, targetNumber, ctx.x, dir);
+    const aim = aimFrom(view, ctx.current, ctx.x);
+    if (dir === 1) return moveTo(view, targetNumber, aim, dir);
 
     const mount = mountAtLine(view, targetNumber);
     if (mount && mount.focusEdge(dir, ctx.x)) return true;
-    return moveTo(view, targetNumber, ctx.x, dir);
+    return moveTo(view, targetNumber, aim, dir);
   };
 
   const stepFromTriggerIntoContent = (view, ctx) => {
@@ -2267,6 +2319,7 @@ module.exports.__test = {
   embedLineRegex,
   triggerPlacement,
   stepTargetLine,
+  textStart,
   skipTargetLine,
   readTriggerSplit,
 };

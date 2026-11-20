@@ -187,6 +187,22 @@ check('arrowing down from above lands on the section', t.stepTargetLine(layout, 
 check('nothing above the first line', t.stepTargetLine(layout, 1, -1, AT), null);
 check('nothing below the last line', t.stepTargetLine(layout, 4, 1, AT), null);
 
+const lineOf = (text) => ({ from: 100, text });
+check('a bullet starts its text past the dash', t.textStart(lineOf('- @[[A#B]]')), { pos: 102, isItem: true });
+check('an indented checkbox starts past the box', t.textStart(lineOf('\t- [ ] task')), { pos: 107, isItem: true });
+check('a heading is not an item and starts at the edge', t.textStart(lineOf('#### Active')), { pos: 100, isItem: false });
+
+const foldedAbove = ['- item', '\t- child', '\t- child', '- @[[A#B]]', 'after'];
+const folded = [{ fromLine: 1, toLine: 3 }];
+check('arrowing down from a folded bullet skips its children onto the section',
+  t.stepTargetLine(foldedAbove, 1, 1, AT, folded), 4);
+check('without the fold the child below is what the arrow reaches',
+  t.stepTargetLine(foldedAbove, 1, 1, AT), null);
+check('arrowing up past a folded bullet lands on the bullet, not a section',
+  t.stepTargetLine(foldedAbove, 4, -1, AT, folded), null);
+check('arrowing up onto a folded section skips its hidden children',
+  t.stepTargetLine(['- @[[A#B]]', '\t- child', 'after'], 3, -1, AT, [{ fromLine: 1, toLine: 2 }]), 1);
+
 const stacked = ['before', '@[[A#B]]', '@[[C#D]]', 'after'];
 check('ctrl+arrow clears a stack of sections in one jump', t.skipTargetLine(stacked, 1, 1, AT), 4);
 check('and the same going up', t.skipTargetLine(stacked, 4, -1, AT), 1);
