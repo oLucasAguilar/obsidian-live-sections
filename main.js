@@ -224,6 +224,24 @@ function collapsibleKeys(lineTexts, sourcePath, anyRegex, lineRegex) {
   return keys;
 }
 
+/* The collapse key of the box on line `lineNumber`, or null when that line
+ * has no fold arrow. Same rule as collapsibleKeys, for one line. */
+function collapseKeyAtLine(lineTexts, lineNumber, sourcePath, anyRegex, lineRegex) {
+  const text = lineTexts[lineNumber - 1];
+  const hits = triggersInLine(text || '', anyRegex);
+  if (!hits.length) return null;
+  if (!canCollapse(lineTexts, lineNumber, triggerPlacement(text, lineRegex))) return null;
+  const occurrences = buildOccurrenceMap(lineTexts, anyRegex);
+  return collapseKeyFor(
+    sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(lineNumber, hits[0].from))
+  );
+}
+
+/* Alt and the left button, nothing else: Alt+Shift drags a rectangle. */
+function isAltClick(event) {
+  return event.button === 0 && event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
+}
+
 function layoutFor(placement) {
   if (!placement) return 'shared';
   return placement.block ? 'block' : 'inline';
@@ -1923,6 +1941,22 @@ class LiveSectionsPlugin extends obsidian.Plugin {
       event.stopPropagation();
     }, true);
 
+    // Alt+click on a trigger line does what its fold arrow does. Capture, so
+    // it runs before the editor turns Alt+click into a second cursor and
+    // before the title of the box opens the link.
+    this.registerDomEvent(document, 'mousedown', (event) => {
+      if (!isAltClick(event)) return;
+      const key = this.collapseKeyAtClick(event.target);
+      if (!key) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const doc = event.target.ownerDocument;
+      const stop = (click) => { click.preventDefault(); click.stopPropagation(); };
+      doc.addEventListener('click', stop, { capture: true, once: true });
+      window.setTimeout(() => doc.removeEventListener('click', stop, true), 500);
+      this.toggleCollapsedKey(key);
+    }, true);
+
     this.app.workspace.onLayoutReady(() => {
       this.refreshEditors();
       this.patchFoldCommand();
@@ -2152,6 +2186,31 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     }
     this.saveCollapsed();
     this.refreshEditors();
+  }
+
+  /* The box an Alt+click folds: the one whose title was clicked, or the one on
+   * the clicked line of whichever editor holds it. A click inside the body of
+   * a box, outside the editor there, folds nothing. */
+  collapseKeyAtClick(target) {
+    if (!target || !target.closest) return null;
+    const header = target.closest('.live-sections-embed-header');
+    if (header) {
+      const mount = header.parentElement && header.parentElement.__liveSectionsMount;
+      return mount && mount.collapsible ? mount.collapseKey : null;
+    }
+    const editorEl = target.closest('.cm-editor');
+    if (!editorEl) return null;
+    const body = target.closest('.live-sections-embed-body');
+    if (body && editorEl.contains(body)) return null;
+    const view = EditorView.findFromDOM(editorEl);
+    if (!view) return null;
+    let line = null;
+    try { line = view.state.doc.lineAt(view.posAtDOM(target)); } catch (err) { return null; }
+    const file = fileFromState(view.state);
+    return collapseKeyAtLine(
+      view.state.doc.toString().split('\n'), line.number, file ? file.path : '',
+      this.embedAny, this.embedLine
+    );
   }
 
   toggleCollapsedKey(key) {
@@ -2387,6 +2446,8 @@ module.exports.__test = {
   hasIndentedChild,
   leadingWhitespace,
   canCollapse,
+  collapseKeyAtLine,
+  isAltClick,
   collapsibleKeys,
   layoutFor,
   embedAnyRegex,

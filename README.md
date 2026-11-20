@@ -22,7 +22,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 
 **Collapse it**
 
-Folds like a list item, with your own fold shortcut.
+Folds like a list item, with your own fold shortcut, or Alt+click on its line.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/collapsing-dark.gif"><img alt="The section folds and unfolds" src="docs/collapsing-light.gif"></picture>
 

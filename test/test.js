@@ -230,9 +230,10 @@ const source = require('fs').readFileSync(require('path').join(__dirname, '..', 
 const builders = (source.match(/new SectionWidget\(/g) || []).length;
 const withFlag = (source.match(/new SectionWidget\([\s\S]{0,220}?collapsible/g) || []).length;
 check('every box is told whether it can collapse', withFlag, builders);
-// the two builders, and collapsibleKeys, which closes them for auto-fold
+// the two builders, collapsibleKeys, which closes them for auto-fold, and
+// collapseKeyAtLine, which folds one on Alt+click
 check('both builders work it out the same way',
-  (source.match(/(?<!function )canCollapse\(lineTexts, /g) || []).length, 3);
+  (source.match(/(?<!function )canCollapse\(lineTexts, /g) || []).length, 4);
 
 /* ---- where the box goes, once text may share the line ---- */
 const bareLine = t.triggerPlacement('- @[[A#B]]', AT);
@@ -326,6 +327,26 @@ check('collapsibleKeys: boxes with a fold arrow, counted per link',
     '  - child',
   ], 'Note.md', ANY, AT),
   ['Note.md::Recipes#Bread::0', 'Note.md::Recipes#Bread::1']);
+
+const boxes = [
+  '- @[[Recipes#Bread]]',
+  '- @[[Recipes#Bread]]',
+  '- !@[[Recipes#Cake]]',
+  '- @[[Recipes#Salt]]',
+  '  - child',
+  '- plain bullet',
+];
+check('alt+click: the key of the clicked trigger line, counted per link',
+  [1, 2].map((n) => t.collapseKeyAtLine(boxes, n, 'Note.md', ANY, AT)),
+  ['Note.md::Recipes#Bread::0', 'Note.md::Recipes#Bread::1']);
+check('alt+click: no box to fold on a quiet line, a line with a child, or a plain line',
+  [3, 4, 6].map((n) => t.collapseKeyAtLine(boxes, n, 'Note.md', ANY, AT)),
+  [null, null, null]);
+check('alt+click: only Alt and the left button',
+  [{}, { shiftKey: true }, { ctrlKey: true }, { button: 1 }].map((extra) => t.isAltClick(
+    Object.assign({ button: 0, altKey: true, shiftKey: false, ctrlKey: false, metaKey: false }, extra)
+  )),
+  [true, false, false, false]);
 
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);
