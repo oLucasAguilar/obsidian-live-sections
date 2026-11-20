@@ -441,6 +441,20 @@ function aimFrom(view, fromLine, x) {
   };
 }
 
+/* Whether the caret's own line wraps past it in that direction, so up or down
+ * moves to another row of the same line. Asked by where the native step would
+ * land: on the same line but on a different row. At the top of the document
+ * the native step up lands on the same row, so that is still the edge. */
+function hasRowBeyond(view, cursor, dir) {
+  const next = view.moveVertically(cursor, dir === 1);
+  const doc = view.state.doc;
+  if (next.head === cursor.head || doc.lineAt(next.head).number !== doc.lineAt(cursor.head).number) return false;
+  const from = view.coordsAtPos(cursor.head, cursor.assoc || -1);
+  const to = view.coordsAtPos(next.head, next.assoc || 1);
+  if (!from || !to) return false;
+  return dir === 1 ? to.top >= from.bottom - 1 : to.bottom <= from.top + 1;
+}
+
 /* A caret on the given line at that spot across the screen, carrying the spot
  * on as the goal for the next step. Coming down it lands on the line's first
  * visual row, going up on its last, which is where the eye arrives. */
@@ -922,8 +936,10 @@ class SectionMount {
       }
 
       if (!this.plugin.settings.exitOnPlainArrow) return;
+      // Shift extends the selection inside this box; leaving would drop it.
+      if (event.shiftKey || event.altKey) return;
       const atEdge = dir === -1 ? line.number === 1 : line.number === cm.state.doc.lines;
-      if (!atEdge) return;
+      if (!atEdge || hasRowBeyond(cm, cursor, dir)) return;
       event.preventDefault();
       event.stopPropagation();
       /* The last line may be a trigger of its own, and then down means into
@@ -936,6 +952,23 @@ class SectionMount {
       if (dir === -1) this.revealTriggerLine(x);
       else this.exitTo(1, x, false);
     }, true);
+  }
+
+  /* Arrow presses that came while the box was still being built, walked now
+   * inside it as plain up and down would. They stop at the box's edge rather
+   * than leave it: a burst of presses landing outside is the bug this fixes. */
+  replaySteps(steps) {
+    const cm = this.host && this.host.cmView();
+    if (!cm || !steps || !steps.length) return;
+    let cursor = cm.state.selection.main;
+    for (const dir of steps) {
+      const next = cm.moveVertically(cursor, dir === 1);
+      if (next.head === cursor.head) break;
+      cursor = next;
+    }
+    if (cursor.head !== cm.state.selection.main.head) {
+      cm.dispatch({ selection: EditorSelection.create([cursor]), scrollIntoView: true });
+    }
   }
 
   // The mount of a box that hangs off one of this box's own lines.
@@ -1435,8 +1468,22 @@ function makeCursorKeymap(plugin) {
   };
 
   const enter = (view, dir) => {
+    /* Stepping into a box parks the caret on the line below the trigger until
+     * the new box has an editor. A second press in that gap moved the parked
+     * caret on through the note, past the box. It waits with the step instead,
+     * and the box replays it once it has the caret. */
+    const pending = plugin.pendingEnter;
+    if (pending && pending.view === view && Date.now() - pending.at <= 1000 &&
+        view.state.selection.main.head === pending.park) {
+      pending.queued.push(dir);
+      return true;
+    }
     const ctx = context(view);
     if (!ctx) return false;
+    /* A long line wraps, and up or down from a row in its middle stays on the
+     * same line. That step is Obsidian's: stepping by line numbers jumped the
+     * caret from the second row of a wrapped line onto the trigger above it. */
+    if (hasRowBeyond(view, ctx.cursor, dir)) return false;
 
     if (dir === 1 && plugin.embedLine.test(ctx.current.text)) {
       return stepFromTriggerIntoContent(view, ctx);
@@ -1474,7 +1521,7 @@ function makeCursorKeymap(plugin) {
      * and the caret stayed parked at the start of the next line. The request
      * waits instead, and the box answers it once it has an editor. */
     plugin.pendingEnter = {
-      view, line: triggerNumber, x: ctx.x, park: view.state.selection.main.head, at: Date.now(),
+      view, line: triggerNumber, x: ctx.x, park: view.state.selection.main.head, at: Date.now(), queued: [],
     };
     window.requestAnimationFrame(() => plugin.claimPendingEnter());
     return true;
@@ -2071,7 +2118,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
       const line = mount.triggerLine();
       if (!line || line.number !== pending.line) continue;
       this.pendingEnter = null;
-      mount.focusEdge(1, pending.x);
+      if (mount.focusEdge(1, pending.x)) mount.replaySteps(pending.queued);
       return;
     }
   }
