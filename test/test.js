@@ -230,8 +230,9 @@ const source = require('fs').readFileSync(require('path').join(__dirname, '..', 
 const builders = (source.match(/new SectionWidget\(/g) || []).length;
 const withFlag = (source.match(/new SectionWidget\([\s\S]{0,220}?collapsible/g) || []).length;
 check('every box is told whether it can collapse', withFlag, builders);
+// the two builders, and collapsibleKeys, which closes them for auto-fold
 check('both builders work it out the same way',
-  (source.match(/(?<!function )canCollapse\(lineTexts, /g) || []).length, 2);
+  (source.match(/(?<!function )canCollapse\(lineTexts, /g) || []).length, 3);
 
 /* ---- where the box goes, once text may share the line ---- */
 const bareLine = t.triggerPlacement('- @[[A#B]]', AT);
@@ -314,6 +315,17 @@ check('the box that is building is told to the boxes it builds',
 check('arrow of a top level trigger sits at the line start', t.leadingWhitespace('- @[[Recipes#Bread]]'), 0);
 check('arrow of a tabbed trigger sits after the tab', t.leadingWhitespace('\t- @[[Recipes#Bread]]'), 1);
 check('arrow of a space indented trigger sits after the spaces', t.leadingWhitespace('    - @[[Recipes#Bread]]'), 4);
+
+check('collapsibleKeys: boxes with a fold arrow, counted per link',
+  t.collapsibleKeys([
+    '- @[[Recipes#Bread]]',
+    '- @[[Recipes#Bread]]',
+    '- !@[[Recipes#Cake]]',
+    'text @[[Recipes#Tea]]',
+    '- @[[Recipes#Salt]]',
+    '  - child',
+  ], 'Note.md', ANY, AT),
+  ['Note.md::Recipes#Bread::0', 'Note.md::Recipes#Bread::1']);
 
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);

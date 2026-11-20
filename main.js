@@ -208,6 +208,22 @@ function canCollapse(lineTexts, lineNumber, placement) {
   return !hasIndentedChild(lineTexts, lineNumber);
 }
 
+/* The collapse key of every box in a note that has a fold arrow: the first
+ * trigger of each line, as the decorations build them. */
+function collapsibleKeys(lineTexts, sourcePath, anyRegex, lineRegex) {
+  const occurrences = buildOccurrenceMap(lineTexts, anyRegex);
+  const keys = [];
+  for (let i = 0; i < lineTexts.length; i++) {
+    const hits = triggersInLine(lineTexts[i], anyRegex);
+    if (!hits.length) continue;
+    if (!canCollapse(lineTexts, i + 1, triggerPlacement(lineTexts[i], lineRegex))) continue;
+    keys.push(collapseKeyFor(
+      sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(i + 1, hits[0].from))
+    ));
+  }
+  return keys;
+}
+
 function layoutFor(placement) {
   if (!placement) return 'shared';
   return placement.block ? 'block' : 'inline';
@@ -1873,6 +1889,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.pendingEnter = null;
     this.setTrigger();
     this.applyRuleColor();
+    this.registerEvent(this.app.workspace.on('auto-fold:folded', (file, text) => this.collapseNote(file, text)));
 
     this.registerEditorExtension([
       focusField,
@@ -2123,6 +2140,20 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     }
   }
 
+  /* auto-fold folds a note's bullets each time it becomes active, and fires
+   * this so the boxes in it close too. */
+  collapseNote(file, text) {
+    if (!file || typeof text !== 'string') return;
+    const keys = collapsibleKeys(text.split('\n'), file.path, this.embedAny, this.embedLine);
+    if (!keys.length) return;
+    for (const key of keys) this.collapsed.add(key);
+    for (const mount of this.mounts) {
+      if (keys.includes(mount.collapseKey)) mount.applyCollapsed();
+    }
+    this.saveCollapsed();
+    this.refreshEditors();
+  }
+
   toggleCollapsedKey(key) {
     if (this.collapsed.has(key)) this.collapsed.delete(key);
     else this.collapsed.add(key);
@@ -2356,6 +2387,7 @@ module.exports.__test = {
   hasIndentedChild,
   leadingWhitespace,
   canCollapse,
+  collapsibleKeys,
   layoutFor,
   embedAnyRegex,
   triggersInLine,
