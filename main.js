@@ -247,6 +247,159 @@ function layoutFor(placement) {
   return placement.block ? 'block' : 'inline';
 }
 
+/* Moves a bullet and everything indented under it to a heading at the end of
+ * the footer section of the same note, and leaves `- @[[#Title]]` where the
+ * bullet was. Returns the edits as offsets into the old text, so the editor
+ * applies them as one undo step, or `{ error }` saying why nothing happens. */
+const BULLET_LINE = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\[.\][ \t]+)?(.*)$/;
+
+function bulletToFooter(text, lineIndex, footerHeading, trigger) {
+  const lines = text.split('\n');
+  const starts = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const lineEnd = (i) => starts[i] + lines[i].length;
+
+  const m = (lines[lineIndex] || '').match(BULLET_LINE);
+  if (!m) return { error: 'not-bullet' };
+  const [, indent, marker, gap, checkbox, rest] = m;
+  const title = rest.trim();
+  if (!title) return { error: 'empty' };
+  if (title.includes(trigger + '[[')) return { error: 'already' };
+  if (/[#|^]|\[\[|\]\]/.test(title)) return { error: 'chars' };
+
+  const own = indentWidth(lines[lineIndex]);
+  let last = lineIndex;
+  for (let j = lineIndex + 1; j < lines.length; j++) {
+    if (!lines[j].trim()) continue;
+    if (indentWidth(lines[j]) <= own) break;
+    last = j;
+  }
+  if (last === lineIndex) return { error: 'no-children' };
+
+  const { headings } = parseHeadings(text);
+  const footerKey = normalizeHeading(footerHeading);
+  const footer = headings.find((h) => h.key === footerKey);
+  const footerEnd = footer
+    ? (headings.find((h) => h.line > footer.line && h.level <= footer.level) || { line: lines.length }).line
+    : lines.length;
+  if (footer && lineIndex > footer.line && lineIndex < footerEnd) return { error: 'in-footer' };
+  if (headings.some((h) => h.key === normalizeHeading(title))) return { error: 'exists' };
+
+  const children = lines.slice(lineIndex + 1, last + 1);
+  const cut = Math.min(...children.filter((l) => l.trim()).map(indentWidth));
+  const dedent = (line) => {
+    if (!line.trim()) return '';
+    let width = 0;
+    let i = 0;
+    while (i < line.length && width < cut && (line[i] === ' ' || line[i] === '\t')) {
+      width += line[i] === '\t' ? 4 : 1;
+      i++;
+    }
+    return line.slice(i);
+  };
+
+  const level = Math.min(footer ? footer.level + 1 : 2, 6);
+  const block = ['', '#'.repeat(level) + ' ' + title, ...children.map(dedent)];
+  if (!footer) block.unshift('', '# ' + footerHeading);
+
+  // after the last line with text in the footer, so its trailing blanks stay below
+  let anchor = footerEnd - 1;
+  while (anchor > (footer ? footer.line : -1) && !lines[anchor].trim()) anchor--;
+  if (anchor < 0) anchor = 0;
+
+  const reference = indent + marker + gap + (checkbox || '') + trigger + '[[#' + title + ']]';
+  const changes = [
+    { from: starts[lineIndex], to: lineEnd(last), insert: reference },
+    { from: lineEnd(anchor), to: lineEnd(anchor), insert: '\n' + block.join('\n') },
+  ];
+  const insertedBefore = anchor < lineIndex ? block.length : 0;
+  return { changes, cursor: { line: lineIndex + insertedBefore, ch: reference.length }, title };
+}
+
+/* The way back: on a `- @[[#Title]]` line, the footer section it points to
+ * becomes the children of the bullet again, and the heading goes away. */
+function footerToBullet(text, lineIndex, footerHeading, trigger) {
+  const lines = text.split('\n');
+  const starts = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const lineEnd = (i) => starts[i] + lines[i].length;
+
+  const ref = new RegExp(
+    `^([ \\t]*(?:[-*+]|\\d+[.)])[ \\t]+(?:\\[.\\][ \\t]+)?)${escapeRegExp(trigger)}\\[\\[#([^\\]#|^]+)\\]\\][ \\t]*$`
+  );
+  const m = (lines[lineIndex] || '').match(ref);
+  if (!m) return { error: 'not-reference' };
+  const [, head, title] = m;
+
+  const { headings } = parseHeadings(text);
+  const footer = headings.find((h) => h.key === normalizeHeading(footerHeading));
+  if (!footer) return { error: 'no-footer' };
+  const footerEnd = (headings.find((h) => h.line > footer.line && h.level <= footer.level) || { line: lines.length }).line;
+  const key = normalizeHeading(title);
+  const target = headings.find((h) => h.key === key && h.line > footer.line && h.line < footerEnd);
+  if (!target) return { error: 'not-in-footer' };
+  const end = (headings.find((h) => h.line > target.line && h.level <= target.level) || { line: lines.length }).line;
+  if (headings.some((h) => h.line > target.line && h.line < end)) return { error: 'has-headings' };
+
+  const links = text.split('[[#').slice(1).filter((s) => normalizeHeading(s.split(/[\]|#]/)[0]) === key);
+  if (links.length > 1) return { error: 'linked-elsewhere' };
+
+  let last = end - 1;
+  while (last > target.line && !lines[last].trim()) last--;
+  let before = target.line - 1;
+  while (before > footer.line && !lines[before].trim()) before--;
+  if (lineIndex > before && lineIndex <= last) return { error: 'in-footer' };
+
+  const indent = (head.match(/^[ \t]*/) || [''])[0];
+  // Obsidian indents with tabs by default; spaces only when the note already uses them
+  const unit = !/^\t/m.test(text) && /^ +\S/m.test(text) ? '    ' : '\t';
+  let first = target.line + 1;
+  while (first <= last && !lines[first].trim()) first++;
+  const body = lines.slice(first, last + 1).map((l) => (l.trim() ? indent + unit + l : ''));
+  const restored = [head + title.trim(), ...body].join('\n');
+
+  const changes = [
+    { from: starts[lineIndex], to: lineEnd(lineIndex), insert: restored },
+    { from: lineEnd(before), to: lineEnd(last), insert: '' },
+  ];
+  const removedBefore = before < lineIndex ? last - before : 0;
+  return { changes, cursor: { line: lineIndex - removedBefore, ch: head.length + title.trim().length }, title };
+}
+
+function toggleFooterSection(text, lineIndex, footerHeading, trigger) {
+  const back = footerToBullet(text, lineIndex, footerHeading, trigger);
+  if (back.error !== 'not-reference') return back;
+  return bulletToFooter(text, lineIndex, footerHeading, trigger);
+}
+
+function applyChanges(text, changes) {
+  return [...changes]
+    .sort((a, b) => b.from - a.from)
+    .reduce((acc, c) => acc.slice(0, c.from) + c.insert + acc.slice(c.to), text);
+}
+
+const BULLET_TO_FOOTER_ERRORS = {
+  'not-bullet': 'The cursor is not on a bullet.',
+  empty: 'The bullet has no text to use as a heading.',
+  already: 'This bullet already links a live section.',
+  chars: 'A heading link cannot hold #, |, ^ or [[ ]]. Edit the bullet text first.',
+  'no-children': 'The bullet has nothing indented under it.',
+  'in-footer': 'The bullet is already inside the footer section.',
+  exists: 'A heading with this text already exists in the note.',
+  'no-footer': 'The note has no footer heading to bring the section back from.',
+  'not-in-footer': 'The linked heading is not inside the footer section.',
+  'has-headings': 'The section has headings inside it, which cannot become bullets.',
+  'linked-elsewhere': 'Another link in this note points to the same section.',
+};
+
 function collapseKeyFor(sourcePath, linktext, occurrence) {
   return `${sourcePath}::${linktext}::${occurrence || 0}`;
 }
@@ -1891,6 +2044,7 @@ const DEFAULT_SETTINGS = {
   writeDelayMs: 400,
   maxEmbedDepth: 3,
   ruleColor: 'link',
+  footerHeading: 'Footer',
 };
 
 class LiveSectionsPlugin extends obsidian.Plugin {
@@ -1977,6 +2131,27 @@ class LiveSectionsPlugin extends obsidian.Plugin {
         } else {
           new obsidian.Notice('No wikilink on this line.');
         }
+      },
+    });
+
+    this.addCommand({
+      id: 'bullet-to-footer-section',
+      name: 'Move bullet to a footer section, or bring it back',
+      hotkeys: [{ modifiers: ['Alt'], key: 'R' }],
+      editorCallback: (editor) => {
+        const result = toggleFooterSection(
+          editor.getValue(), editor.getCursor().line, this.settings.footerHeading, this.settings.embedTrigger
+        );
+        if (result.error) {
+          new obsidian.Notice(BULLET_TO_FOOTER_ERRORS[result.error]);
+          return;
+        }
+        editor.transaction({
+          changes: result.changes.map((c) => ({
+            from: editor.offsetToPos(c.from), to: editor.offsetToPos(c.to), text: c.insert,
+          })),
+        });
+        editor.setCursor(result.cursor);
       },
     });
 
@@ -2361,6 +2536,17 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
+      .setName('Footer heading')
+      .setDesc('Where "Move bullet to a footer section" puts the bullet, and where it brings it back from. Created at the end of the note if missing.')
+      .addText((text) =>
+        text.setValue(this.plugin.settings.footerHeading).onChange(async (value) => {
+          if (!value.trim()) return;
+          this.plugin.settings.footerHeading = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new obsidian.Setting(containerEl)
       .setName('Section embeds while reading')
       .setDesc('Show the section in a hover preview and in reading view too, rendered and read only. Off leaves the trigger as written outside the editor.')
       .addToggle((toggle) =>
@@ -2436,6 +2622,10 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
 
 module.exports = LiveSectionsPlugin;
 module.exports.__test = {
+  bulletToFooter,
+  footerToBullet,
+  toggleFooterSection,
+  applyChanges,
   splitLinkText,
   normalizeHeading,
   parseHeadings,

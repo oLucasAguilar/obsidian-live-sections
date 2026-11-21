@@ -348,5 +348,65 @@ check('alt+click: only Alt and the left button',
   )),
   [true, false, false, false]);
 
+/* ---- bullet to footer section ---- */
+const move = (lines, at) => {
+  const text = lines.join('\n');
+  const r = t.bulletToFooter(text, at, 'Footer', '@');
+  return r.error ? r.error : { text: t.applyChanges(text, r.changes).split('\n'), cursor: r.cursor };
+};
+const footerNote = [
+  '## Today',
+  '- Bread',
+  '\t- flour',
+  '\t\t- rye',
+  '\t- water',
+  '- Cake',
+  '',
+  '# Footer',
+  '## Soup',
+  '- salt',
+  '',
+];
+check('bullet to footer: children move under a new heading at the end of the footer', move(footerNote, 1), {
+  text: ['## Today', '- @[[#Bread]]', '- Cake', '', '# Footer', '## Soup', '- salt',
+    '', '## Bread', '- flour', '\t- rye', '- water', ''],
+  cursor: { line: 1, ch: 13 },
+});
+check('bullet to footer: refuses without children, on a heading, in the footer, or twice',
+  [move(footerNote, 5), move(footerNote, 0), move(['# Footer', '- salt', '  - x'], 1), move(['- Soup', '  - x', '## Soup'], 0)],
+  ['no-children', 'not-bullet', 'in-footer', 'exists']);
+check('bullet to footer: refuses text a heading link cannot hold',
+  [move(['- a #tag', '  - x'], 0), move(['- see [[Other]]', '  - x'], 0)], ['chars', 'chars']);
+check('bullet to footer: creates the footer when the note has none', move(['- Bread', '  - flour'], 0).text,
+  ['- @[[#Bread]]', '', '# Footer', '', '## Bread', '- flour']);
+check('bullet to footer: a footer above the bullet shifts the cursor down', move(
+  ['# Footer', '## Soup', '- salt', '# Today', '- [ ] Bread', '  - flour'], 4),
+  { text: ['# Footer', '## Soup', '- salt', '', '## Bread', '- flour', '# Today', '- [ ] @[[#Bread]]'],
+    cursor: { line: 7, ch: 17 } });
+check('bullet to footer: a blank line inside the children goes along',
+  move(['- Bread', '  - flour', '', '  - water', '- Cake', '# Footer'], 0).text,
+  ['- @[[#Bread]]', '- Cake', '# Footer', '', '## Bread', '- flour', '', '- water']);
+
+const toggle = (lines, at) => {
+  const text = lines.join('\n');
+  const r = t.toggleFooterSection(text, at, 'Footer', '@');
+  return r.error ? r.error : { text: t.applyChanges(text, r.changes).split('\n'), cursor: r.cursor };
+};
+const sent = move(footerNote, 1);
+check('footer to bullet: the same key on the link brings the section back as it was',
+  toggle(sent.text, sent.cursor.line), { text: footerNote, cursor: { line: 1, ch: 7 } });
+const above = ['# Footer', '## Soup', '- salt', '', '## Bread', '- flour', '# Today', '- @[[#Bread]]'];
+check('footer to bullet: a footer above the link pulls the cursor up', toggle(above, 7),
+  { text: ['# Footer', '## Soup', '- salt', '# Today', '- Bread', '\t- flour'], cursor: { line: 4, ch: 7 } });
+check('footer to bullet: refuses a missing footer, a heading outside it, subheadings, a second link',
+  [toggle(['- @[[#Bread]]', '## Bread', '- x'], 0),
+    toggle(['- @[[#Bread]]', '## Bread', '- x', '# Footer'], 0),
+    toggle(['- @[[#Bread]]', '# Footer', '## Bread', '#### Rye', '- x'], 0),
+    toggle(['- @[[#Bread]]', '- @[[#Bread]]', '# Footer', '## Bread', '- x'], 0)],
+  ['no-footer', 'not-in-footer', 'has-headings', 'linked-elsewhere']);
+check('footer to bullet: indents with spaces when the note does',
+  toggle(['  - a', '- @[[#Bread]]', '# Footer', '## Bread', '- flour'], 1).text,
+  ['  - a', '- Bread', '    - flour', '# Footer']);
+
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);
