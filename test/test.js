@@ -169,6 +169,20 @@ check('the unrelated heading of the same name is untouched', edited.includes('un
 check('an unknown heading writes nothing', t.replaceSection(note, ['Nope'], 'x'), null);
 check('a section can be emptied', t.replaceSection(note, ['Ideas', 'Ana'], '').split('\n')[3], '');
 
+/* ---- an open ``` never takes the headings below with it ---- */
+const footer = ['## Today', '- @[[#Old]]', '# Footer', '## Old', '- keep', '', '## Calendar', '- Dentist', '', '## Reminders', '- Read'].join('\n');
+const typing = t.replaceSection(footer, ['Old'], '- keep\n- ```\n');
+const again = t.replaceSection(typing, ['Old'], '- keep\n- ```x\n');
+check('with the fence open, writing again keeps the headings below', again.includes('## Calendar') && again.includes('## Reminders'), true);
+check('with the fence open, the new text is written', again.includes('- ```x'), true);
+const erased = t.replaceSection(again, ['Old'], '- keep\n- Novo\n');
+check('erasing the fence writes and leaves the note whole', erased, footer.replace('- keep', '- keep\n- Novo'));
+const closed = t.replaceSection(footer, ['Old'], '```\ncode\n```\n- keep\n');
+check('a closed fence writes as before', t.replaceSection(closed, ['Old'], '- keep\n'), footer);
+const last = ['## A', 'x', '## Last', 'y'].join('\n');
+check('an open fence in the last section, with no heading below, writes to the end',
+  t.replaceSection(t.replaceSection(last, ['Last'], '```\ny'), ['Last'], '```\ny\nz'), ['## A', 'x', '## Last', '```', 'y', 'z'].join('\n'));
+
 /* ---- the blank line before the next heading is held back, never lost ---- */
 check('one blank line comes off', t.splitTrailingBlank('- item\n'), { text: '- item', trailing: '\n' });
 check('several come off', t.splitTrailingBlank('- item\n\n\n'), { text: '- item', trailing: '\n\n\n' });

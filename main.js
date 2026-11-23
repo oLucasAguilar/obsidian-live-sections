@@ -106,12 +106,40 @@ function splitTrailingBlank(text) {
   return { text: text.slice(0, match.index), trailing: match[0] };
 }
 
+/* A ``` typed in the section and not closed yet turns every heading below it
+ * into code, so the section seems to run to the end of the note. Writing it
+ * back over that range would delete those headings and everything under them.
+ * Returns the line where the section really ends (the first heading the open
+ * fence hides), or -1 when nothing is hidden. */
+function hiddenSectionEnd(lines, section) {
+  if (section.bodyEnd !== lines.length) return -1;
+  let fenceChar = null;
+  let open = -1;
+  for (let i = section.bodyStart; i < lines.length; i++) {
+    const fence = lines[i].match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (!fence) continue;
+    if (fenceChar === null) {
+      fenceChar = fence[1][0];
+      open = i;
+    } else if (fenceChar === fence[1][0]) {
+      fenceChar = null;
+    }
+  }
+  if (fenceChar === null) return -1;
+  for (let i = open + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+\S/);
+    if (m && m[1].length <= section.level) return i;
+  }
+  return -1;
+}
+
 function replaceSection(text, segments, newBody) {
   const section = findSection(text, segments);
   if (!section) return null;
   const lines = text.split('\n');
+  const hidden = hiddenSectionEnd(lines, section);
   const head = lines.slice(0, section.bodyStart);
-  const tail = lines.slice(section.bodyEnd);
+  const tail = lines.slice(hidden === -1 ? section.bodyEnd : hidden);
   return head.concat(newBody.split('\n'), tail).join('\n');
 }
 
@@ -2631,6 +2659,7 @@ module.exports.__test = {
   parseHeadings,
   findSection,
   replaceSection,
+  hiddenSectionEnd,
   breadcrumbParts,
   buildOccurrenceMap,
   hasIndentedChild,
