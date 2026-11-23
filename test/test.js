@@ -254,7 +254,17 @@ const bareLine = t.triggerPlacement('- @[[A#B]]', AT);
 check('a line to itself keeps its old layout', t.layoutFor(bareLine), 'inline');
 check('alone on the line is still a block', t.layoutFor(t.triggerPlacement('@[[A#B]]', AT)), 'block');
 check('a shared line is neither', t.layoutFor(null), 'shared');
-check('a shared line has no fold arrow', t.canCollapse(['text @[[A#B]]'], 1, null), false);
+check('a shared line folds by its first trigger',
+  t.canCollapse(['text @[[A#B]] more'], 1, t.foldPlacement(null, hits('text @[[A#B]] more'))), true);
+check('a shared quiet trigger still has no arrow',
+  t.canCollapse(['text !@[[A#B]]'], 1, t.foldPlacement(null, hits('text !@[[A#B]]'))), false);
+check('a shared line with children leaves the arrow to Obsidian',
+  t.canCollapse(['- x @[[A#B]] y', '\t- child'], 1, t.foldPlacement(null, hits('- x @[[A#B]] y'))), false);
+check('a line without a trigger has nothing to fold', t.canCollapse(['text'], 1, t.foldPlacement(null, [])), false);
+const SOME = t.embedSomewhereRegex('@');
+check('arrowing down lands on a shared line too',
+  t.stepTargetLine(['before', '- 📍`P` > @[[#H]] > [I](x)', 'after'], 1, 1, SOME), 2);
+check('asking twice gives the same answer', [SOME.test('a @[[B]]'), SOME.test('a @[[B]]')], [true, true]);
 check('a line to itself keeps its arrow', t.canCollapse(['- @[[A#B]]', '- next'], 1, bareLine), true);
 check('children still take the arrow away',
   t.canCollapse(['- @[[A#B]]', '\t- child'], 1, bareLine), false);
@@ -340,7 +350,7 @@ check('collapsibleKeys: boxes with a fold arrow, counted per link',
     '- @[[Recipes#Salt]]',
     '  - child',
   ], 'Note.md', ANY, AT),
-  ['Note.md::Recipes#Bread::0', 'Note.md::Recipes#Bread::1']);
+  ['Note.md::Recipes#Bread::0', 'Note.md::Recipes#Bread::1', 'Note.md::Recipes#Tea::0']);
 
 const boxes = [
   '- @[[Recipes#Bread]]',

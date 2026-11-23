@@ -173,6 +173,12 @@ function embedAnyRegex(trigger) {
   return new RegExp(`(!?)${escapeRegExp(trigger)}\\[\\[([^\\]\\n]+)\\]\\]`, 'g');
 }
 
+// "Does this line have a trigger anywhere", for test(): without the g flag,
+// so asking moves no lastIndex.
+function embedSomewhereRegex(trigger) {
+  return new RegExp(embedAnyRegex(trigger).source);
+}
+
 // lastIndex on a global regex is state, so nothing here runs test or exec on
 // the shared one. matchAll reads it and leaves it alone.
 function triggersInLine(lineText, anyRegex) {
@@ -231,6 +237,14 @@ function embedGuard(ancestorKeys, key, depth, maxDepth) {
 // A line the trigger does not have to itself gets no fold arrow: the arrow sits
 // at the start of the line, where the text is, not the box. The quiet form gets
 // none either: its whole point is a line that does not read as a list item.
+/* A shared line folds like one the trigger has to itself, by its first
+ * trigger: triggerPlacement says null for it, which is about layout, not about
+ * folding. */
+function foldPlacement(placement, hits) {
+  if (placement) return placement;
+  return hits.length ? { quiet: hits[0].quiet, shared: true } : null;
+}
+
 function canCollapse(lineTexts, lineNumber, placement) {
   if (!placement || placement.quiet) return false;
   return !hasIndentedChild(lineTexts, lineNumber);
@@ -244,7 +258,7 @@ function collapsibleKeys(lineTexts, sourcePath, anyRegex, lineRegex) {
   for (let i = 0; i < lineTexts.length; i++) {
     const hits = triggersInLine(lineTexts[i], anyRegex);
     if (!hits.length) continue;
-    if (!canCollapse(lineTexts, i + 1, triggerPlacement(lineTexts[i], lineRegex))) continue;
+    if (!canCollapse(lineTexts, i + 1, foldPlacement(triggerPlacement(lineTexts[i], lineRegex), hits))) continue;
     keys.push(collapseKeyFor(
       sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(i + 1, hits[0].from))
     ));
@@ -258,7 +272,7 @@ function collapseKeyAtLine(lineTexts, lineNumber, sourcePath, anyRegex, lineRege
   const text = lineTexts[lineNumber - 1];
   const hits = triggersInLine(text || '', anyRegex);
   if (!hits.length) return null;
-  if (!canCollapse(lineTexts, lineNumber, triggerPlacement(text, lineRegex))) return null;
+  if (!canCollapse(lineTexts, lineNumber, foldPlacement(triggerPlacement(text, lineRegex), hits))) return null;
   const occurrences = buildOccurrenceMap(lineTexts, anyRegex);
   return collapseKeyFor(
     sourcePath, hits[0].linktext, occurrences.get(occurrenceKeyFor(lineNumber, hits[0].from))
@@ -1088,7 +1102,7 @@ class SectionMount {
     if (skipBlock) {
       const lineTexts = [];
       for (let n = 1; n <= doc.lines; n++) lineTexts.push(doc.line(n).text);
-      const skipped = skipTargetLine(lineTexts, line.number, dir, this.plugin.embedLine);
+      const skipped = skipTargetLine(lineTexts, line.number, dir, this.plugin.embedSomewhere);
       if (skipped !== null) targetNumber = skipped;
     }
     if (targetNumber < 1 || targetNumber > doc.lines) {
@@ -1700,11 +1714,11 @@ function makeCursorKeymap(plugin) {
      * caret from the second row of a wrapped line onto the trigger above it. */
     if (hasRowBeyond(view, ctx.cursor, dir)) return false;
 
-    if (dir === 1 && plugin.embedLine.test(ctx.current.text)) {
+    if (dir === 1 && plugin.embedSomewhere.test(ctx.current.text)) {
       return stepFromTriggerIntoContent(view, ctx);
     }
 
-    const targetNumber = stepTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine, ctx.folds);
+    const targetNumber = stepTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedSomewhere, ctx.folds);
     if (targetNumber === null) return false;
 
     const aim = aimFrom(view, ctx.current, ctx.x);
@@ -1745,7 +1759,7 @@ function makeCursorKeymap(plugin) {
   const skip = (view, dir) => {
     const ctx = context(view);
     if (!ctx) return false;
-    const targetNumber = skipTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedLine);
+    const targetNumber = skipTargetLine(ctx.lineTexts, ctx.current.number, dir, plugin.embedSomewhere);
     if (targetNumber === null) return false;
     return moveTo(view, targetNumber, ctx.x, dir);
   };
@@ -1777,18 +1791,18 @@ function buildBlockDecorations(state, plugin) {
     const hits = triggersInLine(line.text, plugin.embedAny);
     if (!hits.length) continue;
     const placement = triggerPlacement(line.text, plugin.embedLine);
-    const collapsible = canCollapse(lineTexts, n, placement);
+    const collapsible = canCollapse(lineTexts, n, foldPlacement(placement, hits));
     const layout = layoutFor(placement);
 
     // a shared line always keeps its body below it, so the body does not jump
     // when the cursor arrives and the link goes raw
     if (layout === 'shared' || triggerRevealed(plugin, state, line)) {
-      for (const hit of hits) {
+      for (const [i, hit] of hits.entries()) {
         ranges.push(
           Decoration.widget({
             widget: new SectionWidget(
               plugin, hit.linktext, sourcePath, layout, true,
-              occurrences.get(occurrenceKeyFor(n, hit.from)), collapsible, hit.quiet
+              occurrences.get(occurrenceKeyFor(n, hit.from)), collapsible && i === 0, hit.quiet
             ),
             side: 1,
           }).range(line.to)
@@ -1849,7 +1863,7 @@ function buildInlineDecorations(view, plugin) {
         // A line with an indented line under it is a list item with children,
         // and Obsidian draws its own fold arrow there. Two arrows on one line
         // is one too many, so the native one owns that line.
-        const collapsible = canCollapse(lineTexts, line.number, placement);
+        const collapsible = canCollapse(lineTexts, line.number, foldPlacement(placement, hits));
         const layout = layoutFor(placement);
 
         // The marker of a quiet line is furniture too. It stays in the file,
@@ -2342,6 +2356,7 @@ class LiveSectionsPlugin extends obsidian.Plugin {
   setTrigger() {
     this.embedLine = embedLineRegex(this.settings.embedTrigger);
     this.embedAny = embedAnyRegex(this.settings.embedTrigger);
+    this.embedSomewhere = embedSomewhereRegex(this.settings.embedTrigger);
   }
 
   // the closing rule is drawn by CSS, so the choice is carried as a body class
@@ -2670,6 +2685,8 @@ module.exports.__test = {
   collapsibleKeys,
   layoutFor,
   embedAnyRegex,
+  embedSomewhereRegex,
+  foldPlacement,
   triggersInLine,
   occurrenceKeyFor,
   sectionKey,
