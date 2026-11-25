@@ -432,5 +432,22 @@ check('footer to bullet: indents with spaces when the note does',
   toggle(['  - a', '- @[[#Bread]]', '# Footer', '## Bread', '- flour'], 1).text,
   ['  - a', '- Bread', '    - flour', '# Footer']);
 
+const flour = '- Bread\n\t- flour\n- Soup\n\t- salt';
+check('minimal change: only the stretch that changed, none when equal',
+  [t.minimalChange(flour, flour.replace('salt', 'pepper')), t.minimalChange(flour, flour),
+    t.minimalChange('aa', 'aaa')],
+  [{ from: 27, to: 31, insert: 'pepper' }, null, { from: 2, to: 2, insert: 'a' }]);
+// Bread folds from the end of its line to the end of flour, Soup to the end of salt
+const folds = [{ from: 7, to: 16 }, { from: 23, to: 31 }];
+check('fold ranges: an edit inside or above moves the folds with the text',
+  [t.mapFoldRanges(folds, flour, flour.replace('flour', 'rye flour')),
+    t.mapFoldRanges(folds, flour, flour.replace('- Soup', '- Hot soup'))],
+  [[{ from: 7, to: 20 }, { from: 27, to: 35 }], [{ from: 7, to: 16 }, { from: 27, to: 35 }]]);
+check('fold ranges: a bullet that lost its children loses its fold',
+  t.mapFoldRanges(folds, flour, flour.replace('\t- flour\n', '')), [{ from: 14, to: 22 }]);
+check('box keys: every trigger of the note, foldable or not',
+  t.boxKeys(['- @[[#Bread]]', '!@[[#Soup]]', 'text @[[#Bread]] more'], 'Recipes.md', t.embedAnyRegex('@')),
+  ['Recipes.md::#Bread::0', 'Recipes.md::#Soup::0', 'Recipes.md::#Bread::1']);
+
 console.log(`\n${failures === 0 ? 'all checks passed' : failures + ' FAILURES'}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -2,7 +2,7 @@
 
 const obsidian = require('obsidian');
 const { Decoration, EditorView, ViewPlugin, WidgetType, keymap } = require('@codemirror/view');
-const { EditorSelection, Prec, StateEffect, StateField } = require('@codemirror/state');
+const { EditorSelection, Prec, StateEffect, StateField, Transaction } = require('@codemirror/state');
 const { foldedRanges, foldEffect } = require('@codemirror/language');
 
 function splitLinkText(raw) {
@@ -446,6 +446,53 @@ function collapseKeyFor(sourcePath, linktext, occurrence) {
   return `${sourcePath}::${linktext}::${occurrence || 0}`;
 }
 
+/* The collapse key of every box in a note, foldable or not. */
+function boxKeys(lineTexts, sourcePath, anyRegex) {
+  const occurrences = buildOccurrenceMap(lineTexts, anyRegex);
+  const keys = [];
+  for (let i = 0; i < lineTexts.length; i++) {
+    for (const hit of triggersInLine(lineTexts[i], anyRegex)) {
+      keys.push(collapseKeyFor(sourcePath, hit.linktext, occurrences.get(occurrenceKeyFor(i + 1, hit.from))));
+    }
+  }
+  return keys;
+}
+
+/* The one change that turns `before` into `after`: the stretch between the
+ * common start and the common end. Null when they are equal. Replacing the
+ * whole text instead drops every fold in the box, since a fold whose text is
+ * deleted goes with it. */
+function minimalChange(before, after) {
+  if (before === after) return null;
+  let start = 0;
+  const shorter = Math.min(before.length, after.length);
+  while (start < shorter && before.charCodeAt(start) === after.charCodeAt(start)) start++;
+  let end = 0;
+  while (end < shorter - start
+    && before.charCodeAt(before.length - 1 - end) === after.charCodeAt(after.length - 1 - end)) end++;
+  return { from: start, to: before.length - end, insert: after.slice(start, after.length - end) };
+}
+
+/* Fold ranges taken on `before`, moved to where they sit in `after`. A range
+ * whose ends went away, or that has nothing left inside, is dropped. */
+function mapFoldRanges(ranges, before, after) {
+  const change = minimalChange(before, after);
+  if (!change) return ranges.slice();
+  const shift = change.insert.length - (change.to - change.from);
+  const at = (pos, side) => {
+    if (pos < change.from || (pos === change.from && side < 0)) return pos;
+    if (pos > change.to || (pos === change.to && side > 0)) return pos + shift;
+    return null;
+  };
+  const mapped = [];
+  for (const range of ranges) {
+    const from = at(range.from, -1);
+    const to = at(range.to, 1);
+    if (from !== null && to !== null && after.slice(from, to).trim()) mapped.push({ from, to });
+  }
+  return mapped;
+}
+
 function occurrenceKeyFor(lineNumber, from) {
   return `${lineNumber}:${from}`;
 }
@@ -764,8 +811,22 @@ class SectionEditorHost {
     return this.view.state.doc.toString();
   }
 
+  /* Text from outside (the file changed on disk). Only the stretch that
+   * changed is replaced, so the folds around it stay where they were; it
+   * stays out of the undo history and is not written back. */
   setValue(value) {
-    if (value === this.getValue()) return;
+    const change = minimalChange(this.getValue(), value);
+    if (!change) return;
+    const cm = this.cmView();
+    if (cm) {
+      this.syncing = true;
+      try {
+        cm.dispatch({ changes: change, annotations: Transaction.addToHistory.of(false) });
+      } finally {
+        this.syncing = false;
+      }
+      return;
+    }
     if (this.native) {
       this.native.set(value, true);
       return;
@@ -1298,7 +1359,8 @@ class SectionMount {
       this.host = new SectionEditorHost(this.app, this.bodyEl, {
         value,
         file,
-        onChange: (next) => this.flush(next),
+        // text that came from the file is already in the file
+        onChange: (next) => { if (!(this.host && this.host.syncing)) this.flush(next); },
       });
     } finally {
       this.plugin.buildStack.pop();
@@ -1308,7 +1370,13 @@ class SectionMount {
     this.applyCollapsed();
     this.watchSize();
     this.claimPendingCaret();
-    this.restoreFolds(value);
+    const foldOnBuild = this.plugin.foldOnBuild.get(this.collapseKey);
+    if (foldOnBuild) {
+      this.plugin.foldOnBuild.delete(this.collapseKey);
+      window.requestAnimationFrame(() => this.foldBullets(foldOnBuild));
+    } else {
+      this.restoreFolds(value);
+    }
     window.requestAnimationFrame(() => this.plugin.claimPendingEnter());
     window.requestAnimationFrame(() => this.settle());
   }
@@ -1405,19 +1473,34 @@ class SectionMount {
   }
 
   // Offsets only mean something on the text they were taken from, so a section
-  // that changed since then comes back open.
+  // that changed since then has them moved past the change first.
   restoreFolds(value) {
     const saved = this.plugin.savedFolds.get(this.collapseKey);
-    if (!saved || saved.value !== value) return;
+    if (!saved) return;
+    const ranges = mapFoldRanges(saved.ranges, saved.value, value);
+    if (!ranges.length) return;
     window.requestAnimationFrame(() => {
       const cm = this.host && this.host.cmView();
-      if (!cm || this.destroyed || cm.state.doc.toString() !== saved.value) return;
+      if (!cm || this.destroyed || cm.state.doc.toString() !== value) return;
       try {
-        cm.dispatch({ effects: saved.ranges.map((range) => foldEffect.of(range)) });
+        cm.dispatch({ effects: ranges.map((range) => foldEffect.of(range)) });
       } catch (err) {
         console.error('[live-sections] could not restore the folds', err);
       }
     });
+  }
+
+  /* Alt+- in the note this box sits in: auto-fold hands over its own fold
+   * pass, so the bullets in here fold by the same rule as the note's. */
+  foldBullets(fold) {
+    const cm = this.host && this.host.cmView();
+    if (!cm || this.destroyed) return false;
+    try {
+      fold(cm);
+    } catch (err) {
+      console.error('[live-sections] could not fold the bullets in the box', err);
+    }
+    return true;
   }
 
   destroy() {
@@ -2100,10 +2183,13 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     this.pendingCaret = null;
     this.movingCaret = false;
     this.savedFolds = new Map();
+    this.foldOnBuild = new Map();
     this.pendingEnter = null;
     this.setTrigger();
     this.applyRuleColor();
-    this.registerEvent(this.app.workspace.on('auto-fold:folded', (file, text) => this.collapseNote(file, text)));
+    this.registerEvent(this.app.workspace.on(
+      'auto-fold:folded', (file, text, fold) => this.collapseNote(file, text, fold)
+    ));
 
     this.registerEditorExtension([
       focusField,
@@ -2394,9 +2480,11 @@ class LiveSectionsPlugin extends obsidian.Plugin {
 
   /* auto-fold folds a note's bullets each time it becomes active, and fires
    * this so the boxes in it close too. */
-  collapseNote(file, text) {
+  collapseNote(file, text, fold) {
     if (!file || typeof text !== 'string') return;
-    const keys = collapsibleKeys(text.split('\n'), file.path, this.embedAny, this.embedLine);
+    const lines = text.split('\n');
+    if (typeof fold === 'function') this.foldBulletsInNote(lines, file.path, fold);
+    const keys = collapsibleKeys(lines, file.path, this.embedAny, this.embedLine);
     if (!keys.length) return;
     for (const key of keys) this.collapsed.add(key);
     for (const mount of this.mounts) {
@@ -2404,6 +2492,25 @@ class LiveSectionsPlugin extends obsidian.Plugin {
     }
     this.saveCollapsed();
     this.refreshEditors();
+  }
+
+  /* The bullets inside every box of the note fold with the note's, and so do
+   * those of a box inside one of them. A box not built yet (off screen) folds
+   * when it is, once. A box inside one that is not built yet is missed. */
+  foldBulletsInNote(lines, path, fold) {
+    const keys = new Set(boxKeys(lines, path, this.embedAny));
+    const folded = [];
+    for (const mount of this.mounts) {
+      if (keys.has(mount.collapseKey) && mount.foldBullets(fold)) {
+        keys.delete(mount.collapseKey);
+        folded.push(mount);
+      }
+    }
+    for (const mount of this.mounts) {
+      if (folded.includes(mount)) continue;
+      if (folded.some((outer) => outer.bodyEl && outer.bodyEl.contains(mount.el))) mount.foldBullets(fold);
+    }
+    for (const key of keys) this.foldOnBuild.set(key, fold);
   }
 
   /* The box an Alt+click folds: the one whose title was clicked, or the one on
@@ -2665,6 +2772,9 @@ class LiveSectionsSettingTab extends obsidian.PluginSettingTab {
 
 module.exports = LiveSectionsPlugin;
 module.exports.__test = {
+  boxKeys,
+  minimalChange,
+  mapFoldRanges,
   bulletToFooter,
   footerToBullet,
   toggleFooterSection,
